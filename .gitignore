@@ -1,0 +1,18 @@
+node_modules/
+actpipe
+*.log
+.DS_Store
+fixtures/out/
+web/dist/
+
+# 本地素材与个人数据（不入库）
+*.fit
+*.FIT
+*.MP4
+*.mp4
+screeshot.png
+web/screenshot.png
+
+# 构建中间产物
+.*.bun-build
+.repro-*.tmp.mjs
