@@ -85,7 +85,8 @@ async function doResolve(c: LlmConfig): Promise<ResolvedLlm | null> {
       id: provider,
       name: provider,
       baseUrl,
-      auth: { apiKey: { name: provider, resolve: async () => ({ auth: apiKey ? { apiKey } : {} }) } },
+      // pi-ai 的 openai-completions 适配器强制要求 apiKey——keyless 本地端点补占位 key（真鉴权端点仍用配置的真 key）
+      auth: { apiKey: { name: provider, resolve: async () => ({ auth: { apiKey: apiKey ?? 'actpipe-keyless' } }) } },
       models: [model],
       api: openAICompletionsApi(),
     });

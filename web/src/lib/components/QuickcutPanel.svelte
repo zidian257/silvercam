@@ -14,13 +14,16 @@
     quickcutVideoUrl,
   } from '../quickcut.ts';
   import type { QuickcutRecord } from '../quickcut.ts';
+  import { llmHintText } from '../llm.ts';
+  import type { LlmStatus } from '../llm.ts';
 
   interface Props {
     jobId: string;
     records?: QuickcutRecord[]; // 全部快剪记录（面板内部按 jobId 归并，最新一条优先展示）
+    llmStatus?: LlmStatus | null; // dash 挂载时拉的 llm_status；null = 未配置/未拉到
     onSubmit?: (jobId: string, scenario: string, useLlm: boolean) => Promise<void> | void;
   }
-  let { jobId, records = [], onSubmit = () => {} }: Props = $props();
+  let { jobId, records = [], llmStatus = null, onSubmit = () => {} }: Props = $props();
 
   let formOpen = $state(false);
   let scenario = $state(QC_SCENARIOS[0].value);
@@ -64,6 +67,7 @@
       </label>
       <label class="ai" title="用 LLM 对各幕候选镜头做二次优选；关掉则只用 FIT 状态机的确定性剪辑">
         <input type="checkbox" bind:checked={useLlm}> AI 优选镜头
+        <span class="llmhint">{llmHintText(llmStatus)}</span>
       </label>
       <button class="btn primary" disabled={submitting} onclick={submit}>{submitting ? '提交中…' : '开始快剪'}</button>
       <button class="btn" disabled={submitting} onclick={() => (formOpen = false)}>取消</button>
@@ -137,7 +141,8 @@
   .head { display: flex; align-items: center; justify-content: space-between; }
   .ttl { font-size: 13px; font-weight: 600; color: var(--text-2); }
   .form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-  .ai { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-1); cursor: pointer; }
+  .ai { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--text-1); cursor: pointer; }
+  .llmhint { flex-basis: 100%; padding-left: 20px; font-size: 11px; color: var(--text-3); }
   .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
   .pulse {
     width: 4px;

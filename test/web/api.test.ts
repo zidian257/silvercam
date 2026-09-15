@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { getJson, postJson, setUnauthorizedHandler } from '../../web/src/lib/api.ts';
+import { getJson, postJson, putJson, setUnauthorizedHandler } from '../../web/src/lib/api.ts';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -32,5 +32,20 @@ describe('postJson', () => {
   it('成功返回 json', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ok":true}', { status: 200 })));
     expect(await postJson('/x', { b: 2 })).toEqual({ ok: true });
+  });
+});
+
+describe('putJson', () => {
+  it('以 PUT 发 json 并返回解析结果', async () => {
+    const spy = vi.fn(async () => new Response('{"llm":{"provider":"lmstudio"}}', { status: 200 }));
+    vi.stubGlobal('fetch', spy);
+    expect(await putJson('/config', { llm: { provider: 'lmstudio' } })).toEqual({ llm: { provider: 'lmstudio' } });
+    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string)).toEqual({ llm: { provider: 'lmstudio' } });
+  });
+  it('错误响应抛出服务端 error 文案', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"json body required"}', { status: 400 })));
+    await expect(putJson('/config', {})).rejects.toThrow('json body required');
   });
 });

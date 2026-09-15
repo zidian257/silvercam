@@ -86,4 +86,15 @@ describe('QuickcutPanel', () => {
     await fireEvent.click(screen.getByText('开始快剪'));
     expect(onSubmit).toHaveBeenCalledWith('j1', 'ride_4plus2', false);
   });
+
+  it('AI 优选旁的小字随 llmStatus：configured 显示生效 describe，否则提示仅按数据优选', async () => {
+    const { unmount } = render(QuickcutPanel, { props: { jobId: 'j1', records: [], llmStatus: { configured: true, describe: 'lmstudio/qwen' } } });
+    await fireEvent.click(screen.getByText('快剪 30s'));
+    expect(screen.getByText('将使用 lmstudio/qwen')).toBeTruthy();
+    unmount();
+
+    render(QuickcutPanel, { props: { jobId: 'j1', records: [] } }); // 未传 llmStatus → 按未配置
+    await fireEvent.click(screen.getByText('快剪 30s'));
+    expect(screen.getByText('未配置 LLM，仅按数据优选')).toBeTruthy();
+  });
 });

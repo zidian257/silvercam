@@ -382,3 +382,10 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 **接口**：Feathers service `quickcuts`（find/get/create）。`POST /quickcuts { job_id, scenario, use_llm }` → 串行通道消化（不挤主队列）：`queued→analyzing→[refining]→rendering→done/failed`，记录落 `quickcuts.json`（重启中间态标 failed）。成片命名 `<base>_kuaijian.mp4` 与源视频同目录。UI：dash 任务行剪刀按钮（done 且有成片时出现），场景选择 + AI 优选开关 + 2s 轮询 + 六幕清单与未选入原因。
 
 **踩坑记录**：① Feathers service 内部禁用 ES `#` 私有方法（`wrapService` 用 `Object.create` 包装后私有品牌丢失，500）——用 TS `private`；② pi `AgentTool.execute` 返回值 `details` 必填（README 示例未体现）；③ pi streamFn 抛错时 `agent.prompt()` 不外抛，降级靠「未 commit 退回原 plan」兜住。
+
+### 快剪补记（2026-09-15 LLM 面板与 DeepSeek）
+
+- **LLM 设置融合进 dash**（StravaPanel 旁的 LlmPanel，不起新页面）：provider 下拉（LM Studio 本地默认 / DeepSeek / Moonshot / OpenAI / OpenAI 兼容端点），字段随 provider 动态显隐；「测试连接」免保存直测 +「保存」后自动刷新状态；状态点四态（绿已验证 / 黄已配置未验证 / 灰未配置 / 红测试失败）。QuickcutPanel 的 AI 优选开关下常驻小字提示将用哪个模型（或未配置降级提示）。
+- **端点**（POST，走 customMethodBridge）：`/quickcuts/llm_status`（缓存 resolve，无网络探测）与 `/quickcuts/llm_test`（fresh resolve + 15s 真 ping 计延迟；body 带 llm 则免保存直测表单配置）。
+- **DeepSeek 快剪推荐配置**：`provider: deepseek`、`model: deepseek-v4-flash-vision-exp`（2026-08 上线的实验性多模态，价同 V4-Flash，pi-ai 目录内置、input=[text,image] 自动判定视觉）。`deepseek-chat/deepseek-reasoner` 不在 pi 目录；`deepseek-v4-flash` 纯文本不能用于快剪。
+- **坑**：① pi-ai 的 `models.complete` 失败不 reject，resolve 出 `stopReason:'error'/'aborted'` + errorMessage——llm_test 必须检查 stopReason，否则不可达端点误报 ok；② openai-completions 适配器强制 apiKey——keyless 本地端点由 llm.ts 补占位 key `actpipe-keyless`（真鉴权端点如用户的 LM Studio 仍需配置真 token）。

@@ -72,3 +72,10 @@ export async function postJson<T = any>(path: string, body?: unknown): Promise<T
   if (!r.ok) throw new Error(data.error ?? `POST ${path} → ${r.status}`);
   return data;
 }
+
+export async function putJson<T = any>(path: string, body?: unknown): Promise<T> {
+  const r = await api(path, { method: 'PUT', body: JSON.stringify(body ?? {}) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error ?? `PUT ${path} → ${r.status}`);
+  return data;
+}

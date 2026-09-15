@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getJson, postJson, api } from '../../lib/api.ts';
+  import { getJson, postJson, putJson, api } from '../../lib/api.ts';
   import { computeCards } from '../../lib/dash.ts';
   import { hasActive } from '../../lib/quickcut.ts';
   import type { QuickcutRecord } from '../../lib/quickcut.ts';
+  import { llmConfigKey } from '../../lib/llm.ts';
+  import type { LlmConfig, LlmLastTest, LlmStatus, LlmTestResult } from '../../lib/llm.ts';
   import StatCards from '../../lib/components/StatCards.svelte';
   import JobsTable from '../../lib/components/JobsTable.svelte';
   import StravaPanel from '../../lib/components/StravaPanel.svelte';
+  import LlmPanel from '../../lib/components/LlmPanel.svelte';
   import AssetsPanel from '../../lib/components/AssetsPanel.svelte';
   import AppNav from '../../lib/components/AppNav.svelte';
   import type { ActpipeConfig, ProgressPayload } from '../../../../src/types.ts';
@@ -70,6 +73,13 @@
   let openQuickcuts = $state<Record<string, boolean>>({});
   let statusLine = $state('');
   let statusErr = $state(false);
+  let llmStatus = $state<LlmStatus | null>(null);
+  let llmLastTest = $state<LlmLastTest>(null);
+  let llmTestResult = $state<LlmTestResult | null>(null);
+  let llmTesting = $state(false);
+  let llmSaving = $state(false);
+  let llmMsg = $state('');
+  let llmTestedKey = ''; // 最近一次测过的配置（保存内容一致时保留测试结论）
 
   // OAuth 回跳结果提示
   const q = new URLSearchParams(location.search);
@@ -191,11 +201,51 @@
     }
   }
 
+  // llm_status 未上线（404）或失败时静默按未配置显示
+  async function loadLlmStatus() {
+    llmStatus = await postJson('/quickcuts/llm_status', {}).catch(() => null);
+  }
+
+  async function onLlmTest(llm: LlmConfig) {
+    llmTesting = true;
+    try {
+      const r = await postJson<LlmTestResult>('/quickcuts/llm_test', { llm });
+      llmTestResult = r;
+      llmLastTest = r.ok ? 'ok' : 'fail';
+    } catch (e) {
+      llmTestResult = { ok: false, error: (e as Error).message };
+      llmLastTest = 'fail';
+    } finally {
+      llmTestedKey = llmConfigKey(llm);
+      llmTesting = false;
+    }
+  }
+
+  async function onLlmSave(llm: LlmConfig) {
+    llmSaving = true;
+    llmMsg = '';
+    try {
+      config = await putJson<ActpipeConfig>('/config', { llm });
+      // 保存的内容与测过的不同 → 旧测试结论作废，回到「已配置未验证」
+      if (llmConfigKey(llm) !== llmTestedKey) {
+        llmLastTest = null;
+        llmTestResult = null;
+      }
+      llmMsg = '已保存';
+      await loadLlmStatus();
+    } catch (e) {
+      llmMsg = `保存失败：${(e as Error).message}`;
+    } finally {
+      llmSaving = false;
+    }
+  }
+
   let timer: ReturnType<typeof setInterval>;
   onMount(() => {
     refresh();
     loadAssets();
     loadStrava();
+    loadLlmStatus();
     timer = setInterval(refresh, 2500);
   });
   onDestroy(() => {
@@ -216,7 +266,7 @@
 
   <section>
     <h2>出片任务</h2>
-    <JobsTable {jobs} {openLogs} {logs} {onToggleLog} {onRetry} {onFit} {quickcuts} {openQuickcuts} {onToggleQuickcut} {onQuickcutSubmit} />
+    <JobsTable {jobs} {openLogs} {logs} {onToggleLog} {onRetry} {onFit} {quickcuts} {openQuickcuts} {onToggleQuickcut} {onQuickcutSubmit} {llmStatus} />
   </section>
 
   <section>
@@ -244,6 +294,25 @@
   <section>
     <h2>Strava</h2>
     <StravaPanel st={strava} msg={stravaMsg} syncing={stravaSyncing} onSave={onStravaSave} onSync={onStravaSync} />
+  </section>
+
+  <section>
+    <h2>LLM</h2>
+    {#if config}
+      <LlmPanel
+        st={llmStatus}
+        lastTest={llmLastTest}
+        testResult={llmTestResult}
+        testing={llmTesting}
+        saving={llmSaving}
+        msg={llmMsg}
+        saved={config.llm ?? null}
+        onTest={onLlmTest}
+        onSave={onLlmSave}
+      />
+    {:else}
+      <div class="empty">加载中…</div>
+    {/if}
   </section>
 
   <section>

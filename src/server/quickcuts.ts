@@ -14,7 +14,7 @@ import { paths, ensureDirs } from '../lib/paths.ts';
 import { readJson, run, writeJsonAtomic } from '../lib/util.ts';
 import { analyzeQuickcut, normalizeSamples, quickcutOutputPathFor, renderQuickcut, SCENARIOS, SCENARIO_RIDE_4PLUS2 } from '../modules/quickcut.ts';
 import type { QuickcutPlan, QuickcutSegment } from '../modules/quickcut.ts';
-import { resolveLlm } from './llm.ts';
+import { resolveLlm, complete } from './llm.ts';
 import type { Job, SegmentArtifacts } from '../types.ts';
 import type { ConfigRef, LogFn } from './services/config.ts';
 
@@ -58,6 +58,7 @@ export interface QuickcutDeps {
   log?: LogFn;
   render?: QuickcutRenderFn;
   resolveLlmFn?: typeof resolveLlm; // 测试注入 stub，避免触碰真实 LLM 端点
+  completeFn?: typeof complete;     // llm_test 的 ping 调用口，测试注入 stub 禁真网络
 }
 
 // 视频真实时长用 ffprobe 读输出文件本身，不信各段 probe 之和（封装间隙/精度会累计误差）
@@ -68,22 +69,35 @@ async function probeDurationS(file: string): Promise<number> {
   return d;
 }
 
+// ping 的限时护栏：llm.ts 的 complete 不收 signal（该文件不动），在调用侧用 AbortSignal.timeout 竞速兜底
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  const signal = AbortSignal.timeout(ms);
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      signal.addEventListener('abort', () => reject(new Error(`LLM ping 超时（${Math.round(ms / 1000)}s）`)), { once: true });
+    }),
+  ]);
+}
+
 export class QuickcutService {
   queue: JobLookup;
   configRef: ConfigRef;
   log: LogFn;
   render: QuickcutRenderFn;
   resolveLlmFn: typeof resolveLlm;
+  completeFn: typeof complete;
   file: string;
   items: QuickcutRecord[];
   lane: Promise<unknown>; // 串行消化通道：上一个任务的 promise 链下一个
 
-  constructor({ queue, configRef, log = console.log, render = renderQuickcut, resolveLlmFn = resolveLlm }: QuickcutDeps) {
+  constructor({ queue, configRef, log = console.log, render = renderQuickcut, resolveLlmFn = resolveLlm, completeFn = complete }: QuickcutDeps) {
     this.queue = queue;
     this.configRef = configRef;
     this.log = log;
     this.render = render;
     this.resolveLlmFn = resolveLlmFn;
+    this.completeFn = completeFn;
     ensureDirs();
     this.file = path.join(paths.home, 'quickcuts.json');
     this.items = readJson<QuickcutRecord[]>(this.file, []);
@@ -140,6 +154,33 @@ export class QuickcutService {
     this.save();
     this.enqueue(rec);
     return { ...rec }; // 返回快照：异步消化立即开始，调用方拿到的是入队时刻
+  }
+
+  // POST /quickcuts/llm_status：缓存的 resolveLlm 读配置状态（不发网络探测，快）；body 忽略
+  async llm_status() {
+    const llm = await this.resolveLlmFn(this.configRef.current.llm ?? null);
+    return { configured: !!llm, describe: llm?.describe ?? null, vision: llm?.vision ?? false };
+  }
+
+  // POST /quickcuts/llm_test：fresh 重解析 + 真实极小 ping 测延迟；body.llm 缺省时测已保存配置
+  async llm_test(data: any) {
+    const cfg = (data?.llm ?? this.configRef.current.llm) ?? null;
+    const llm = await this.resolveLlmFn(cfg, { fresh: true });
+    if (!llm) return { ok: false, error: '未配置或端点不可达', describe: null, vision: false, latency_ms: null };
+    const t0 = Date.now();
+    try {
+      const msg: any = await withTimeout(
+        this.completeFn(llm, { messages: [{ role: 'user', content: '回复 ok 两个字', timestamp: Date.now() }] }),
+        15000,
+      );
+      // pi-ai 的失败不 reject：AssistantMessage.stopReason='error'/'aborted'，详情在 errorMessage
+      if (msg?.stopReason === 'error' || msg?.stopReason === 'aborted') {
+        throw new Error(msg.errorMessage ?? `LLM ping 失败（stopReason=${msg.stopReason}）`);
+      }
+      return { ok: true, describe: llm.describe, vision: llm.vision, latency_ms: Date.now() - t0, error: null };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message, describe: llm.describe, vision: llm.vision, latency_ms: null };
+    }
   }
 
   // ---------- 内部 ----------

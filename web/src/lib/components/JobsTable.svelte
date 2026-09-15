@@ -3,6 +3,7 @@
   import { fmtAgo } from '../format.ts';
   import QuickcutPanel from './QuickcutPanel.svelte';
   import type { QuickcutRecord } from '../quickcut.ts';
+  import type { LlmStatus } from '../llm.ts';
   import type { ProgressPayload } from '../../../../src/types.ts';
 
   // /jobs 列表摘要（服务端 JobsService.find 的按任务投影；非共享类型，本地定义）
@@ -31,6 +32,7 @@
     openQuickcuts?: Record<string, boolean>;
     onToggleQuickcut?: (id: string) => void;
     onQuickcutSubmit?: (jobId: string, scenario: string, useLlm: boolean) => Promise<void> | void;
+    llmStatus?: LlmStatus | null; // dash 挂载时拉的 llm_status（透传给 QuickcutPanel）
   }
   let {
     jobs = [],
@@ -43,6 +45,7 @@
     openQuickcuts = {},
     onToggleQuickcut = () => {},
     onQuickcutSubmit = () => {},
+    llmStatus = null,
   }: Props = $props();
 
   const pctOf = (j: JobSummary) => (j.progress?.percent != null ? Math.round(j.progress.percent) : null);
@@ -105,7 +108,7 @@
           <tr class="logrow"><td></td><td colspan="4"><div class="joblog">{logs[j.id] ?? '加载中…'}</div></td></tr>
         {/if}
         {#if openQuickcuts[j.id] && canQuickcut(j)}
-          <tr class="qcrow"><td></td><td colspan="4"><QuickcutPanel jobId={j.id} records={quickcuts} onSubmit={onQuickcutSubmit} /></td></tr>
+          <tr class="qcrow"><td></td><td colspan="4"><QuickcutPanel jobId={j.id} records={quickcuts} onSubmit={onQuickcutSubmit} {llmStatus} /></td></tr>
         {/if}
       {/each}
     </tbody>
