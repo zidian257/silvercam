@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { FileText, SlidersHorizontal } from 'lucide-svelte';
+  import { FileText, Scissors, SlidersHorizontal } from 'lucide-svelte';
   import { fmtAgo } from '../format.ts';
+  import QuickcutPanel from './QuickcutPanel.svelte';
+  import type { QuickcutRecord } from '../quickcut.ts';
   import type { ProgressPayload } from '../../../../src/types.ts';
 
   // /jobs 列表摘要（服务端 JobsService.find 的按任务投影；非共享类型，本地定义）
@@ -25,6 +27,10 @@
     onToggleLog?: (id: string) => void;
     onRetry?: (id: string) => void;
     onFit?: (id: string) => void;
+    quickcuts?: QuickcutRecord[];
+    openQuickcuts?: Record<string, boolean>;
+    onToggleQuickcut?: (id: string) => void;
+    onQuickcutSubmit?: (jobId: string, scenario: string, useLlm: boolean) => Promise<void> | void;
   }
   let {
     jobs = [],
@@ -33,10 +39,16 @@
     onToggleLog = () => {},
     onRetry = () => {},
     onFit = () => {},
+    quickcuts = [],
+    openQuickcuts = {},
+    onToggleQuickcut = () => {},
+    onQuickcutSubmit = () => {},
   }: Props = $props();
 
   const pctOf = (j: JobSummary) => (j.progress?.percent != null ? Math.round(j.progress.percent) : null);
   const showBar = (j: JobSummary) => pctOf(j) != null && !['done', 'failed'].includes(j.state);
+  // 快剪入口：仅已完成且有输出成片的任务
+  const canQuickcut = (j: JobSummary) => j.state === 'done' && !!j.output;
 
   const RUNNING = ['ingesting', 'probing', 'rendering', 'encoding'];
   const pillClass = (state: string) =>
@@ -85,11 +97,15 @@
               {#if j.state === 'failed'}<button class="btn" onclick={() => onRetry(j.id)}>重试</button>{/if}
               {#if j.state === 'awaiting_fit'}<button class="btn" onclick={() => onFit(j.id)}>补 FIT</button>{/if}
               {#if j.fit}<a class="btn icon" href="/studio?job={j.id}" title="对齐：打开 studio 看着视频画面校准时间轴"><SlidersHorizontal size={16} /></a>{/if}
+              {#if canQuickcut(j)}<button class="btn icon" title="快剪 30s" onclick={() => onToggleQuickcut(j.id)}><Scissors size={16} /></button>{/if}
             </div>
           </td>
         </tr>
         {#if openLogs[j.id]}
           <tr class="logrow"><td></td><td colspan="4"><div class="joblog">{logs[j.id] ?? '加载中…'}</div></td></tr>
+        {/if}
+        {#if openQuickcuts[j.id] && canQuickcut(j)}
+          <tr class="qcrow"><td></td><td colspan="4"><QuickcutPanel jobId={j.id} records={quickcuts} onSubmit={onQuickcutSubmit} /></td></tr>
         {/if}
       {/each}
     </tbody>
@@ -154,6 +170,6 @@
     overflow: auto;
     color: var(--text-2);
   }
-  .logrow td { border-bottom: 1px solid var(--line); }
+  .logrow td, .qcrow td { border-bottom: 1px solid var(--line); }
   .empty { color: var(--text-3); padding: 18px 4px; }
 </style>

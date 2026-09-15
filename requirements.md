@@ -370,3 +370,15 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 **Strava→pregen 自动渲染**：FIT 库（`fit_library_dir` 默认 `~/.config/actpipe/fits`）是唯一挂钩——Strava 同步/手动载入/上传的 .fit 落库即触发 `PregenService`（`src/server/pregen.ts`）串行预生成 PNG 序列（生产规格：`pregen.fps` null = 跟随 `overlay_fps`、`pregen.resolutions`、当前皮肤），任务渲染直接整段 cache HIT。纪律：一次一个、任务队列忙等空闲、swap 风暴过速率制水位门；`pregen.enabled: false` 可整体关闭。
 
 **公网映射前必做**：`node --experimental-strip-types bin/actpipe.ts passwd <密码>`（auth.password_hash 当前为 null，鉴权未启用；设了才开启全站拦截）。
+
+## 快剪（2026-09-15 落地）
+
+**一句话**：对已完成的 merged dash 任务，一键把一次骑行按叙事剪成 ~30s 短片。三层结构：
+
+1. **L0 确定性内核**（`src/modules/quickcut.ts`）：FIT 状态机按场景模板圈幕，不依赖任何模型。场景 `ride_4plus2`（4+2 爬山）六幕：出发（视频开头车内段，preamble≥8s 才成立）→ 上路（首次持续移动）→ 爬坡（20 样本窗、坡度≥3%、功率/心率最大）→ 登顶（海拔极大值 ±2m 内最静止点）→ 放坡（10 样本窗、坡度≤−2%、速度最大）→ 收尾（视频最后 4s，tail≥6s 才成立）。**纪律：FIT 定位全走流逝秒（时间戳），绝不用样本下标——码表自动暂停会留时间空洞；FIT→视频映射逐段 `videoT = fitElapsed − offsetSeconds`，未覆盖的幕降级丢弃。**基准固化在 `test/server/quickcut.test.ts`（真实骑行归一化样本 fixture，六幕落点全部经成片抽帧人工核验；探测器选出的爬坡峰 301W/177bpm、真·山顶 335m 均优于人工首剪）。
+2. **L1 agent 优选**（`src/server/quickcut-agent.ts`，pi `@earendil-works/pi-agent-core` harness）：两工具 `sample_frames`（ffmpeg 窗口抽帧回传图片）+ `commit_cuts`（校验：时长锁定只许平移、窗口 ⊆ L0±15s、保序不重叠；非法抛错让 LLM 重试）。8 轮安全阀 + `terminate`，**任何失败退回 L0 原 plan**。
+3. **BYOK**（`src/server/llm.ts`，pi `@earendil-works/pi-ai` 统一接口）：`config.llm = { provider, model, api_key, base_url, vision }`；默认 `lmstudio`（`http://127.0.0.1:1234/v1`，本地帧不出机、模型 id 从 `/models` 自动发现）；云端支持 openai/moonshot/anthropic/google/deepseek/xai/groq/openrouter/mistral（显式 `api_key` 或对应环境变量，缺一即视为未配置）。任何一步不可达 → `resolveLlm` 返回 null → 跳过 L1。
+
+**接口**：Feathers service `quickcuts`（find/get/create）。`POST /quickcuts { job_id, scenario, use_llm }` → 串行通道消化（不挤主队列）：`queued→analyzing→[refining]→rendering→done/failed`，记录落 `quickcuts.json`（重启中间态标 failed）。成片命名 `<base>_kuaijian.mp4` 与源视频同目录。UI：dash 任务行剪刀按钮（done 且有成片时出现），场景选择 + AI 优选开关 + 2s 轮询 + 六幕清单与未选入原因。
+
+**踩坑记录**：① Feathers service 内部禁用 ES `#` 私有方法（`wrapService` 用 `Object.create` 包装后私有品牌丢失，500）——用 TS `private`；② pi `AgentTool.execute` 返回值 `details` 必填（README 示例未体现）；③ pi streamFn 抛错时 `agent.prompt()` 不外抛，降级靠「未 commit 退回原 plan」兜住。

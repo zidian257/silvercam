@@ -2,6 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { getJson, postJson, api } from '../../lib/api.ts';
   import { computeCards } from '../../lib/dash.ts';
+  import { hasActive } from '../../lib/quickcut.ts';
+  import type { QuickcutRecord } from '../../lib/quickcut.ts';
   import StatCards from '../../lib/components/StatCards.svelte';
   import JobsTable from '../../lib/components/JobsTable.svelte';
   import StravaPanel from '../../lib/components/StravaPanel.svelte';
@@ -64,6 +66,8 @@
   let stravaSyncing = $state(false);
   let openLogs = $state<Record<string, boolean>>({});
   let logs = $state<Record<string, string>>({});
+  let quickcuts = $state<QuickcutRecord[]>([]);
+  let openQuickcuts = $state<Record<string, boolean>>({});
   let statusLine = $state('');
   let statusErr = $state(false);
 
@@ -75,20 +79,51 @@
 
   async function refresh() {
     try {
-      const [st, jb, ib] = await Promise.all([
+      const [st, jb, ib, qc] = await Promise.all([
         getJson('/api/status'),
         getJson('/jobs'),
         getJson('/api/inbox').catch(() => []),
+        // quickcuts 服务并行开发中：未上线（404）时保持旧值，不拖垮主刷新
+        getJson('/quickcuts').catch(() => quickcuts),
       ]);
       status = st;
       jobs = jb;
       inboxItems = ib;
+      quickcuts = qc;
+      if (hasActive(quickcuts)) ensureQcWatch();
       if (!statusErr) statusLine = `更新于 ${new Date().toLocaleTimeString()}`;
       for (const id of Object.keys(openLogs)) if (openLogs[id]) await loadLog(id);
     } catch (e) {
       statusLine = `刷新失败：${(e as Error).message}`;
       statusErr = true;
     }
+  }
+
+  async function loadQuickcuts() {
+    quickcuts = await getJson('/quickcuts').catch(() => quickcuts);
+  }
+
+  // 提交快剪后的 2s 轮询：全部记录到达终态即停（主 refresh 的循环照样带历史）
+  let qcTimer: ReturnType<typeof setInterval> | null = null;
+  function ensureQcWatch() {
+    if (qcTimer) return;
+    qcTimer = setInterval(async () => {
+      await loadQuickcuts();
+      if (!hasActive(quickcuts)) {
+        clearInterval(qcTimer!);
+        qcTimer = null;
+      }
+    }, 2000);
+  }
+
+  function onToggleQuickcut(id: string) {
+    openQuickcuts = { ...openQuickcuts, [id]: !openQuickcuts[id] };
+  }
+
+  async function onQuickcutSubmit(jobId: string, scenario: string, useLlm: boolean) {
+    await postJson('/quickcuts', { job_id: jobId, scenario, use_llm: useLlm });
+    await loadQuickcuts();
+    ensureQcWatch();
   }
 
   async function loadAssets() {
@@ -163,7 +198,10 @@
     loadStrava();
     timer = setInterval(refresh, 2500);
   });
-  onDestroy(() => clearInterval(timer));
+  onDestroy(() => {
+    clearInterval(timer);
+    if (qcTimer) clearInterval(qcTimer);
+  });
 </script>
 
 <AppNav current="dash">
@@ -178,7 +216,7 @@
 
   <section>
     <h2>出片任务</h2>
-    <JobsTable {jobs} {openLogs} {logs} {onToggleLog} {onRetry} {onFit} />
+    <JobsTable {jobs} {openLogs} {logs} {onToggleLog} {onRetry} {onFit} {quickcuts} {openQuickcuts} {onToggleQuickcut} {onQuickcutSubmit} />
   </section>
 
   <section>

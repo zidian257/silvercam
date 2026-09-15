@@ -9,6 +9,7 @@ import { JobsService } from './services/jobs.ts';
 import type { QueueLike } from './services/jobs.ts';
 import { InboxService } from './services/inbox.ts';
 import { FitsService } from './services/fits.ts';
+import { QuickcutService } from './quickcuts.ts';
 import { ConfigService } from './services/config.ts';
 import type { ConfigRef } from './services/config.ts';
 import { createPagesRouter } from './middleware/pages.ts';
@@ -79,6 +80,8 @@ export function createApp({ queue, configRef, inbox = null, refs = {} }: { queue
   }));
 
   app.use('jobs', new JobsService({ queue }), { methods: ['find', 'get', 'create', 'fit', 'offset', 'bias'], events: ['progress'] });
+  // 快剪：对已出片任务剪 ~30s 短片；轻任务走服务内部串行通道，不挤主队列
+  app.use('quickcuts', new QuickcutService({ queue, configRef }), { methods: ['find', 'get', 'create'] });
   app.use('api/inbox', new InboxService(ctx), { methods: ['find', 'remove', 'commit', 'align', 'reopen'] });
   app.use('api/fits', new FitsService({ configRef }), { methods: ['find', 'create'] });
   app.use('config', new ConfigService(ctx), { methods: ['find', 'update'] });

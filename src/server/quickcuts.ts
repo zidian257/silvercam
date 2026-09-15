@@ -1,0 +1,254 @@
+// 快剪任务服务：对已出片任务（jobs done）做「L0 确定性分析 → 可选 L1 LLM 抛光 → 硬编渲染」。
+// 快剪是轻任务（~30s 硬编 + 可选 LLM 优选 1~3 分钟），走自己的串行通道一次一个，不挤主队列 JobQueue。
+// 记录持久化 <ACTPIPE_HOME>/quickcuts.json；渲染不可断点续跑，进程重启时中间态任务直接标记 failed。
+// L1 抛光层（quickcut-agent.ts，并行开发）一律动态导入 + 兜底：agent 缺失/LLM 不可达/调用失败
+// 都静默回退 L0 原 plan，绝不让任务因此失败（llm_used 记录实际是否生效）。
+// 注意：Feathers wrapService 用 Object.create(实例) 的包装对象调方法，ES #私有方法会丢品牌检查
+// （Receiver must be an instance of class）——Feathers service 只能用 TS private（擦除型），不能跑 #。
+
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { BadRequest, NotFound } from '@feathersjs/errors';
+import { paths, ensureDirs } from '../lib/paths.ts';
+import { readJson, run, writeJsonAtomic } from '../lib/util.ts';
+import { analyzeQuickcut, normalizeSamples, quickcutOutputPathFor, renderQuickcut, SCENARIOS, SCENARIO_RIDE_4PLUS2 } from '../modules/quickcut.ts';
+import type { QuickcutPlan, QuickcutSegment } from '../modules/quickcut.ts';
+import { resolveLlm } from './llm.ts';
+import type { Job, SegmentArtifacts } from '../types.ts';
+import type { ConfigRef, LogFn } from './services/config.ts';
+
+// L1 agent 模块Specifier必须是运行期字符串：文件可能尚不存在，
+// 字面量 specifier 会让 tsc 静态解析报模块缺失、运行时启动即崩
+const AGENT_MODULE: string = './quickcut-agent.ts';
+
+export type QuickcutState = 'queued' | 'analyzing' | 'refining' | 'rendering' | 'done' | 'failed';
+
+export interface QuickcutRecord {
+  id: string;
+  job_id: string;
+  scenario: string;
+  use_llm: boolean;  // 创建入参：是否尝试 L1 抛光
+  llm_used: boolean; // 结果：L1 实际是否生效（未配置/不可达/agent 缺失/失败都为 false）
+  state: QuickcutState;
+  percent: number;
+  plan: QuickcutPlan | null;
+  out: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+// 任务来源的结构面：只需要按 id 查任务（生产 JobQueue 与测试桩都满足）
+export interface JobLookup {
+  get(id: string): Job | null;
+}
+
+// 渲染依赖注入口：与 renderQuickcut 签名兼容（测试注入 stub 避免真编码）
+export type QuickcutRenderFn = (args: {
+  video: string;
+  acts: { start: number; end: number }[];
+  out: string;
+  log: (msg: string) => void;
+  onProgress: (percent: number) => void;
+}) => Promise<{ out: string; durationS: number }>;
+
+export interface QuickcutDeps {
+  queue: JobLookup;
+  configRef: ConfigRef;
+  log?: LogFn;
+  render?: QuickcutRenderFn;
+  resolveLlmFn?: typeof resolveLlm; // 测试注入 stub，避免触碰真实 LLM 端点
+}
+
+// 视频真实时长用 ffprobe 读输出文件本身，不信各段 probe 之和（封装间隙/精度会累计误差）
+async function probeDurationS(file: string): Promise<number> {
+  const r = await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file]);
+  const d = Number(r.stdout.trim());
+  if (r.code !== 0 || !Number.isFinite(d) || d <= 0) throw new Error(`ffprobe 读取时长失败: ${file}`);
+  return d;
+}
+
+export class QuickcutService {
+  queue: JobLookup;
+  configRef: ConfigRef;
+  log: LogFn;
+  render: QuickcutRenderFn;
+  resolveLlmFn: typeof resolveLlm;
+  file: string;
+  items: QuickcutRecord[];
+  lane: Promise<unknown>; // 串行消化通道：上一个任务的 promise 链下一个
+
+  constructor({ queue, configRef, log = console.log, render = renderQuickcut, resolveLlmFn = resolveLlm }: QuickcutDeps) {
+    this.queue = queue;
+    this.configRef = configRef;
+    this.log = log;
+    this.render = render;
+    this.resolveLlmFn = resolveLlmFn;
+    ensureDirs();
+    this.file = path.join(paths.home, 'quickcuts.json');
+    this.items = readJson<QuickcutRecord[]>(this.file, []);
+    // 进程重启时处于中间态的任务标记 failed（渲染不可续跑，重来即新建任务）
+    let interrupted = 0;
+    for (const it of this.items) {
+      if (it.state !== 'done' && it.state !== 'failed') {
+        it.state = 'failed';
+        it.error = '进程重启中断';
+        interrupted++;
+      }
+    }
+    if (interrupted) {
+      this.save();
+      this.log(`[quickcuts] ${interrupted} 个中间态任务因进程重启标记为失败`);
+    }
+    this.lane = Promise.resolve();
+  }
+
+  async find() {
+    // 新 → 旧
+    return this.items.slice().sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  async get(id: string) {
+    const it = this.items.find((i) => i.id === id);
+    if (!it) throw new NotFound('not found');
+    return it;
+  }
+
+  async create(data: any) {
+    const body = data ?? {};
+    if (typeof body.job_id !== 'string' || !body.job_id) throw new BadRequest('job_id required');
+    const scenario = typeof body.scenario === 'string' && body.scenario ? body.scenario : SCENARIO_RIDE_4PLUS2;
+    if (!SCENARIOS[scenario]) throw new BadRequest(`未知快剪场景: ${scenario}`);
+    const job = this.queue.get(body.job_id);
+    if (!job) throw new BadRequest(`job not found: ${body.job_id}`);
+    this.prepare(job); // state/output/samples/segments 校验，不满足即 400
+
+    const rec: QuickcutRecord = {
+      id: crypto.randomUUID().slice(0, 8),
+      job_id: job.id,
+      scenario,
+      use_llm: body.use_llm !== false,
+      llm_used: false,
+      state: 'queued',
+      percent: 0,
+      plan: null,
+      out: null,
+      error: null,
+      created_at: new Date().toISOString(),
+    };
+    this.items.push(rec);
+    this.save();
+    this.enqueue(rec);
+    return { ...rec }; // 返回快照：异步消化立即开始，调用方拿到的是入队时刻
+  }
+
+  // ---------- 内部 ----------
+
+  private save() {
+    writeJsonAtomic(this.file, this.items);
+  }
+
+  // 串行通道：任务按入队顺序逐个消化；单个失败不断链（run 内部已兜底）
+  private enqueue(rec: QuickcutRecord) {
+    this.lane = this.lane.then(() => this.run(rec)).catch(() => {});
+  }
+
+  // 从任务产物推导快剪输入：merged 成片、FIT 样本网格、逐段映射（videoT = fitElapsed − offsetSeconds）。
+  // 合并任务读 <dir>/seg<i>/，单段任务读 <dir>/ 本身；seg 的 offset 优先取 artifacts，缺了读 session.json。
+  // create 阶段调用即 400 校验；run 阶段再调一次取数（失败则任务转 failed）。
+  private prepare(job: Job): { video: string; grid: any; segments: QuickcutSegment[] } {
+    if (job.state !== 'done') throw new BadRequest(`任务 ${job.id} 状态为 ${job.state}，快剪需要已出片（done）任务`);
+    const video = job.artifacts?.output;
+    if (!video || !fs.existsSync(video)) throw new BadRequest(`任务 ${job.id} 的成片文件不存在（${video ?? '无 output'}）`);
+
+    const merged = !!job.artifacts?.segments?.length;
+    const segArts: (SegmentArtifacts | undefined)[] = merged ? job.artifacts.segments! : [job.artifacts];
+    const segDir = (i: number) => (merged ? path.join(job.dir, `seg${i}`) : job.dir);
+
+    const grid = readJson(path.join(segDir(0), 'samples.json')) as any; // 各段共享同一 FIT，seg0 即全程样本
+    if (!grid || !Number.isFinite(grid.t0_ms) || !Array.isArray(grid.samples) || !grid.samples.length) {
+      throw new BadRequest(`任务 ${job.id} 缺少 FIT 样本（seg0/samples.json），不支持快剪`);
+    }
+
+    let videoStartS = 0;
+    const segments: QuickcutSegment[] = segArts.map((art, i) => {
+      const durationS: unknown = art?.probe?.duration;
+      const session = art?.session ?? (readJson(path.join(segDir(i), 'session.json')) as any);
+      const offsetSeconds: unknown = session?.offset_seconds;
+      if (typeof durationS !== 'number' || !Number.isFinite(durationS) || typeof offsetSeconds !== 'number' || !Number.isFinite(offsetSeconds)) {
+        throw new BadRequest(`任务 ${job.id} 第 ${i + 1} 段缺少 probe 时长或 offset`);
+      }
+      const seg: QuickcutSegment = { videoStartS, durationS, offsetSeconds };
+      videoStartS += durationS;
+      return seg;
+    });
+    return { video, grid, segments };
+  }
+
+  private async run(rec: QuickcutRecord): Promise<void> {
+    try {
+      const job = this.queue.get(rec.job_id);
+      if (!job) throw new Error(`job not found: ${rec.job_id}`);
+      const { video, grid, segments } = this.prepare(job);
+
+      // analyzing：L0 确定性内核圈幕
+      rec.state = 'analyzing';
+      this.save();
+      const samples = normalizeSamples(grid.samples, grid.t0_ms);
+      const videoDurationS = await probeDurationS(video);
+      rec.plan = analyzeQuickcut({ samples, segments, videoDurationS, scenario: rec.scenario });
+      this.save();
+      this.log(`[quickcuts] ${rec.id}: L0 出 ${rec.plan.acts.length} 幕共 ${rec.plan.totalS.toFixed(1)}s（丢弃 ${rec.plan.dropped.length} 幕）`);
+
+      // refining：可选 L1 抛光；任何一环不可用都回退 L0，绝不让任务失败
+      rec.llm_used = false;
+      if (rec.use_llm) {
+        rec.state = 'refining';
+        this.save();
+        try {
+          const llm = await this.resolveLlmFn(this.configRef.current.llm ?? null);
+          if (!llm) {
+            this.log(`[quickcuts] ${rec.id}: LLM 未配置/不可达，沿用 L0 plan`);
+          } else {
+            const mod: any = await import(AGENT_MODULE).catch(() => null);
+            if (typeof mod?.refineActsWithAgent !== 'function') {
+              this.log(`[quickcuts] ${rec.id}: L1 agent 未就绪，沿用 L0 plan`);
+            } else {
+              rec.plan = await mod.refineActsWithAgent({ video, plan: rec.plan, llm, log: this.log });
+              rec.llm_used = true;
+              this.log(`[quickcuts] ${rec.id}: L1 抛光完成（${llm.describe}）`);
+            }
+          }
+        } catch (e) {
+          rec.llm_used = false;
+          this.log(`[quickcuts] ${rec.id}: L1 抛光失败，沿用 L0 plan：${(e as Error).message}`);
+        }
+        this.save();
+      }
+
+      // rendering：N 幕 trim + concat 单次硬编；输出与成片同目录（重名自增）
+      rec.state = 'rendering';
+      this.save();
+      const out = quickcutOutputPathFor(video);
+      const r = await this.render({
+        video,
+        acts: rec.plan!.acts,
+        out,
+        log: (m: string) => this.log(m),
+        onProgress: (p: number) => {
+          rec.percent = p; // 进度只留在内存（轮询可读），状态迁移才落盘
+        },
+      });
+      rec.out = r.out;
+      rec.percent = 100;
+      rec.state = 'done';
+      this.save();
+      this.log(`[quickcuts] ${rec.id}: done → ${r.out}`);
+    } catch (e) {
+      rec.error = (e as Error).message;
+      rec.state = 'failed';
+      this.save();
+      this.log(`[quickcuts] ${rec.id}: FAILED ${rec.error}`);
+    }
+  }
+}
