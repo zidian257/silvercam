@@ -10,7 +10,7 @@ process.env.ACTPIPE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'actpipe-quickc
 const { QuickcutService } = await import('../../src/server/quickcuts.ts');
 const { paths } = await import('../../src/lib/paths.ts');
 const { readJson, writeJsonAtomic } = await import('../../src/lib/util.ts');
-import type { QuickcutRenderFn, QuickcutDeps } from '../../src/server/quickcuts.ts';
+import type { QuickcutRenderFn } from '../../src/server/quickcuts.ts';
 
 const VIDEO = path.resolve('fixtures/out/movies/2026-09-06/DJI_20260906100100_virb_like_dash.mp4');
 const VIDEO_2 = path.resolve('fixtures/out/movies/2026-09-06/DJI_20260906100100_virb_like_dash_2.mp4');
@@ -29,7 +29,7 @@ const mkGrid = () => ({
   samples: FIXTURE.samples.map(({ tS, ...rest }: any) => ({ ...rest, t: new Date(T0_MS + tS * 1000).toISOString() })),
 });
 
-// 造 fake job 目录（合并任务布局：seg0/samples.json + seg0/session.json；offset 0 = 无车内段）
+// 造 fake job 目录（合并任务布局：seg0/samples.json + seg0/session.json；offset 0 = 视频与 FIT 同步开始）
 const mkJobDir = (id: string, { video = VIDEO, state = 'done', duration = 2244, withSamples = true }: { video?: string; state?: string; duration?: number; withSamples?: boolean } = {}) => {
   const dir = path.join(paths.jobs, id);
   fs.mkdirSync(path.join(dir, 'seg0'), { recursive: true });
@@ -53,13 +53,12 @@ const mkJobDir = (id: string, { video = VIDEO, state = 'done', duration = 2244, 
   return job;
 };
 
-// stub render（不真编码）+ stub resolveLlm（返回 null = LLM 不可达，禁止触碰真实端点）
+// stub render（不真编码）
 const mkService = (jobs: Map<string, any>, { renderOuts = null as string[] | null } = {}) =>
   new QuickcutService({
     queue: { get: (id: string) => (jobs.get(id) ?? null) as Job | null },
     configRef: { current: {} as ActpipeConfig },
     log: () => {},
-    resolveLlmFn: async () => null,
     render: (async ({ out, onProgress }: any) => {
       renderOuts?.push(out);
       onProgress(50);
@@ -81,7 +80,7 @@ const waitState = async (svc: any, id: string, want: string, timeoutMs = 10000) 
 
 // ---------- 主流程：create → 串行消化 → done ----------
 
-test('create → done：L0 四幕成片（offset 0 无车内段，departure/return 丢弃），llm_used=false', async () => {
+test('create → done：L0 兜底四幕成片（offset 0 无车内段，departure/finish 丢弃）', async () => {
   const job = mkJobDir('job-happy');
   const svc = mkService(new Map([[job.id, job]]));
   const rec = await svc.create({ job_id: job.id });
@@ -92,14 +91,13 @@ test('create → done：L0 四幕成片（offset 0 无车内段，departure/retu
   const done = await waitState(svc, rec.id, 'done');
   assert.equal(done.percent, 100);
   assert.equal(done.error, null);
-  assert.equal(done.llm_used, false); // LLM 不可达 → 回退 L0
 
-  // 六幕模板：offset 0 无车内段 → departure/return 丢弃，命中其余四幕
+  // 兜底槽位：offset 0 无片头/片尾 → departure/finish 丢弃，命中其余四幕
   assert.ok(done.plan);
-  assert.deepEqual(done.plan.acts.map((a: any) => a.key), ['rollout', 'climb', 'summit', 'descent']);
+  assert.deepEqual(done.plan.acts.map((a: any) => a.key), ['rollout', 'effort', 'high', 'speed']);
   const droppedKeys = done.plan.dropped.map((d: any) => d.key);
   assert.ok(droppedKeys.includes('departure'), `dropped=${droppedKeys}`);
-  assert.ok(droppedKeys.includes('return'), `dropped=${droppedKeys}`);
+  assert.ok(droppedKeys.includes('finish'), `dropped=${droppedKeys}`);
 
   // 输出路径：与成片同目录、去 _dash 后缀
   assert.equal(done.out, path.join(path.dirname(VIDEO), 'DJI_20260906100100_virb_like_kuaijian.mp4'));
@@ -110,6 +108,23 @@ test('create → done：L0 四幕成片（offset 0 无车内段，departure/retu
   assert.ok(saved, 'quickcuts.json 未持久化该记录');
   assert.equal(saved.state, 'done');
   assert.equal(saved.plan.acts.length, 4);
+});
+
+test('create 带 cuts：外部剪辑点原样采纳，不跑兜底组装', async () => {
+  const job = mkJobDir('job-cuts');
+  const svc = mkService(new Map([[job.id, job]]));
+  const cuts = [
+    { start: 3, end: 7, label: '开车门' },
+    { start: 1416.2, end: 1423.2, label: '爬坡' },
+  ];
+  const rec = await svc.create({ job_id: job.id, cuts });
+  const done = await waitState(svc, rec.id, 'done');
+  assert.deepEqual(done.plan.acts.map((a: any) => [a.start, a.end, a.label]), [
+    [3, 7, '开车门'],
+    [1416.2, 1423.2, '爬坡'],
+  ]);
+  assert.equal(done.plan.dropped.length, 0);
+  assert.equal(done.plan.totalS, 11);
 });
 
 test('串行通道：两个任务按入队顺序逐个消化', async () => {
@@ -130,14 +145,15 @@ test('串行通道：两个任务按入队顺序逐个消化', async () => {
 
 // ---------- create 校验（400 风格） ----------
 
-test('create 校验：job 不存在 / 未 done / 未知场景 → 400', async () => {
+test('create 校验：job 不存在 / 未 done / cuts 非法 → 400', async () => {
   const done = mkJobDir('job-val-done');
   const queued = mkJobDir('job-val-queued', { state: 'queued' });
   const svc = mkService(new Map([[done.id, done], [queued.id, queued]]));
   await assert.rejects(() => svc.create({}), (e: any) => e.code === 400 && /job_id/.test(e.message));
   await assert.rejects(() => svc.create({ job_id: 'ghost' }), (e: any) => e.code === 400 && /job not found/.test(e.message));
   await assert.rejects(() => svc.create({ job_id: queued.id }), (e: any) => e.code === 400 && /done/.test(e.message));
-  await assert.rejects(() => svc.create({ job_id: done.id, scenario: 'nope' }), (e: any) => e.code === 400 && /未知快剪场景/.test(e.message));
+  await assert.rejects(() => svc.create({ job_id: done.id, cuts: [] }), (e: any) => e.code === 400 && /cuts/.test(e.message));
+  await assert.rejects(() => svc.create({ job_id: done.id, cuts: [{ start: 9, end: 3 }] }), (e: any) => e.code === 400 && /start/.test(e.message));
 });
 
 test('create 校验：成片缺失 / 无 FIT 样本 → 400', async () => {
@@ -147,6 +163,38 @@ test('create 校验：成片缺失 / 无 FIT 样本 → 400', async () => {
   const svc = mkService(new Map([[noOut.id, noOut], [noSamples.id, noSamples]]));
   await assert.rejects(() => svc.create({ job_id: noOut.id }), (e: any) => e.code === 400 && /成片/.test(e.message));
   await assert.rejects(() => svc.create({ job_id: noSamples.id }), (e: any) => e.code === 400 && /FIT 样本/.test(e.message));
+});
+
+// ---------- analyze：只分析不渲染 ----------
+
+test('analyze：返回事件菜单 + 兜底计划 + 视频信息，不产生快剪记录', async () => {
+  const job = mkJobDir('job-analyze');
+  const svc = mkService(new Map([[job.id, job]]));
+  const before = (await svc.find()).length;
+  const r = await svc.analyze({ job_id: job.id });
+  assert.equal(r.job_id, job.id);
+  assert.equal(r.video, VIDEO);
+  assert.equal(r.videoDurationS, 15); // ffprobe 读的是 fixture 真实时长（≠ job 假壳里的段时长）
+  assert.deepEqual(r.segments, [{ videoStartS: 0, durationS: 2244, offsetSeconds: 0 }]);
+  // 事件菜单：功率/心率/海拔/极速事件都该在（段坐标 2244s 下可映射，是否超出 15s 真实时长由调用方判断）
+  const types = r.events.map((e: any) => e.type);
+  for (const t of ['first_move', 'power_peak', 'hr_peak', 'alt_high', 'speed_peak']) {
+    assert.ok(types.includes(t), `缺事件 ${t}（实有 ${types}）`);
+  }
+  assert.ok(r.events.every((e: any) => e.videoS == null || e.videoS >= 0));
+  // 兜底计划：六个槽位非选即弃，且丢弃必须给原因
+  assert.equal(r.plan.acts.length + r.plan.dropped.length, 6);
+  assert.ok(r.plan.dropped.every((d: any) => d.reason));
+  // 只读：不落记录
+  assert.equal((await svc.find()).length, before);
+});
+
+test('analyze 校验：job 不存在 / 未 done → 400', async () => {
+  const queued = mkJobDir('job-analyze-queued', { state: 'queued' });
+  const svc = mkService(new Map([[queued.id, queued]]));
+  await assert.rejects(() => svc.analyze({}), (e: any) => e.code === 400 && /job_id/.test(e.message));
+  await assert.rejects(() => svc.analyze({ job_id: 'ghost' }), (e: any) => e.code === 400 && /job not found/.test(e.message));
+  await assert.rejects(() => svc.analyze({ job_id: queued.id }), (e: any) => e.code === 400 && /done/.test(e.message));
 });
 
 // ---------- get / find ----------
@@ -172,7 +220,7 @@ test('进程重启：加载时中间态任务标记 failed（进程重启中断�
   const file = path.join(paths.home, 'quickcuts.json');
   const items = readJson(file, []) as any[];
   const zombie = (id: string, state: string) => ({
-    id, job_id: 'job-happy', scenario: 'ride_4plus2', use_llm: true, llm_used: false,
+    id, job_id: 'job-happy', cuts: null,
     state, percent: 55, plan: null, out: null, error: null, created_at: '2026-01-01T00:00:00.000Z',
   });
   items.push(zombie('zombie-queued', 'queued'), zombie('zombie-rendering', 'rendering'), zombie('zombie-done', 'done'));
@@ -191,90 +239,4 @@ test('进程重启：加载时中间态任务标记 failed（进程重启中断�
     assert.match(it.error, /进程重启中断/);
   }
   assert.equal((await svc.get('zombie-done')).state, 'done'); // 已完成的不动
-});
-
-// ---------- llm_status / llm_test（自定义方法，全部走注入 stub，禁真网络） ----------
-
-// 假 ResolvedLlm：llm_status/llm_test 只读 describe/vision 两个字段
-const fakeResolved = (over: Record<string, unknown> = {}) =>
-  ({ describe: 'lmstudio/qwen3 @ http://127.0.0.1:1234/v1', vision: true, ...over }) as any;
-
-const mkLlmService = (deps: Partial<QuickcutDeps> = {}) =>
-  new QuickcutService({
-    queue: { get: () => null },
-    configRef: { current: {} as ActpipeConfig },
-    log: () => {},
-    ...deps,
-  });
-
-test('llm_status：未配置（resolve null）→ configured:false', async () => {
-  const svc = mkLlmService({ resolveLlmFn: async () => null });
-  const r = await svc.llm_status();
-  assert.deepEqual(r, { configured: false, describe: null, vision: false });
-});
-
-test('llm_status：注入假 resolved → configured:true 且 describe/vision 透传', async () => {
-  const svc = mkLlmService({ resolveLlmFn: async () => fakeResolved({ vision: false }) });
-  const r = await svc.llm_status();
-  assert.deepEqual(r, { configured: true, describe: 'lmstudio/qwen3 @ http://127.0.0.1:1234/v1', vision: false });
-});
-
-test('llm_test：resolve null → ok:false（未配置或端点不可达）', async () => {
-  const svc = mkLlmService({ resolveLlmFn: async () => null });
-  const r = await svc.llm_test({});
-  assert.deepEqual(r, { ok: false, error: '未配置或端点不可达', describe: null, vision: false, latency_ms: null });
-});
-
-test('llm_test：resolve ok + 假 completeFn → ok:true 且 latency_ms 是数字（fresh 解析 + body.llm 覆盖）', async () => {
-  const seen: { resolveArgs: any[]; pingCtx: any } = { resolveArgs: [], pingCtx: null };
-  const svc = mkLlmService({
-    resolveLlmFn: (async (...args: any[]) => {
-      seen.resolveArgs.push(args);
-      return fakeResolved();
-    }) as any,
-    completeFn: (async (_llm: any, ctx: any) => {
-      seen.pingCtx = ctx;
-      return { content: 'ok' };
-    }) as any,
-  });
-  const override = { provider: 'openai-compat', base_url: 'http://x/v1', model: 'm' };
-  const r = await svc.llm_test({ llm: override });
-  assert.equal(r.ok, true);
-  assert.equal(r.error, null);
-  assert.equal(r.describe, 'lmstudio/qwen3 @ http://127.0.0.1:1234/v1');
-  assert.equal(r.vision, true);
-  assert.ok(typeof r.latency_ms === 'number' && r.latency_ms >= 0, `latency_ms=${r.latency_ms}`);
-  // fresh 重解析 + body.llm 优先于已保存配置
-  assert.deepEqual(seen.resolveArgs, [[override, { fresh: true }]]);
-  // ping 是真实极小一次性对话
-  assert.equal(seen.pingCtx.messages.length, 1);
-  assert.equal(seen.pingCtx.messages[0].role, 'user');
-  assert.equal(seen.pingCtx.messages[0].content, '回复 ok 两个字');
-  assert.ok(typeof seen.pingCtx.messages[0].timestamp === 'number');
-});
-
-test('llm_test：completeFn 抛错 → ok:false 且 error 含消息（describe/vision 透传）', async () => {
-  const svc = mkLlmService({
-    resolveLlmFn: async () => fakeResolved(),
-    completeFn: (async () => {
-      throw new Error('connection refused ECONNREFUSED');
-    }) as any,
-  });
-  const r = await svc.llm_test({});
-  assert.equal(r.ok, false);
-  assert.ok(r.error?.includes('connection refused'), `error=${r.error}`);
-  assert.equal(r.describe, 'lmstudio/qwen3 @ http://127.0.0.1:1234/v1');
-  assert.equal(r.vision, true);
-  assert.equal(r.latency_ms, null);
-});
-
-test('llm_test：completeFn 返回 stopReason=error（pi-ai 失败不 reject）→ ok:false 且 error 取 errorMessage', async () => {
-  const svc = mkLlmService({
-    resolveLlmFn: async () => fakeResolved(),
-    completeFn: (async () => ({ stopReason: 'error', errorMessage: 'fetch failed: ECONNREFUSED' })) as any,
-  });
-  const r = await svc.llm_test({});
-  assert.equal(r.ok, false);
-  assert.ok(r.error?.includes('ECONNREFUSED'), `error=${r.error}`);
-  assert.equal(r.latency_ms, null);
 });

@@ -103,6 +103,8 @@ const HELP = `actpipe — Action 5 Pro + FIT 仪表盘叠加流水线
   actpipe status [job_id]            任务列表 / 单个任务详情
   actpipe logs <job_id>              任务日志
   actpipe preview --video x --fit y -t 1:23 [--offset s] [--skin s] [--lut l] [--out p.png]
+  actpipe quickcut analyze <job_id>    快剪事件菜单 + 兜底计划（只分析不渲染）
+  actpipe quickcut render <job_id> [--cuts cuts.json]  粗剪（无 cuts）/ 按精确剪辑点渲染
   actpipe config [--set k v]         读 / 改全局配置
   actpipe luts                       LUT 预设列表
 
@@ -167,6 +169,38 @@ async function main(): Promise<void> {
       if (!args[1]) throw new Error('logs 需要 job_id');
       const res = await api('GET', `/jobs/${args[1]}/log`);
       process.stdout.write(await res.text());
+      break;
+    }
+
+    case 'quickcut': {
+      const sub = args[1];
+      const jobId = args[2];
+      if ((sub !== 'analyze' && sub !== 'render') || !jobId) throw new Error('用法: actpipe quickcut analyze <job_id> | actpipe quickcut render <job_id> [--cuts cuts.json]');
+      if (sub === 'analyze') {
+        const res = await api('POST', '/quickcuts/analyze', { job_id: jobId });
+        console.log(JSON.stringify(await res.json(), null, 2));
+        break;
+      }
+      // render：cuts 缺省 = 服务端兜底粗剪；给了就是 agent 精剪的剪辑点
+      let cuts: unknown;
+      if (flags.cuts) cuts = JSON.parse(fs.readFileSync(path.resolve(flags.cuts), 'utf8'));
+      const rec = (await (await api('POST', '/quickcuts', { job_id: jobId, cuts })).json()) as { id: string };
+      console.log(`quickcut ${rec.id} 已创建`);
+      // 轮询到终态（快剪无 WS 通道，2s 一拉足够）
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const cur = (await (await api('GET', `/quickcuts/${rec.id}`)).json()) as any;
+        const line = `[${cur.state}]${cur.state === 'rendering' ? ` ${Math.round(cur.percent ?? 0)}%` : ''}${cur.error ? ' ' + cur.error : ''}`;
+        process.stdout.write(`\r${line.padEnd(60)}`);
+        if (cur.state === 'done') {
+          console.log(`\n完成: ${cur.out}`);
+          break;
+        }
+        if (cur.state === 'failed') {
+          console.error(`\n失败: ${cur.error}`);
+          process.exit(1);
+        }
+      }
       break;
     }
 

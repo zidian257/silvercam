@@ -1,17 +1,17 @@
 // 快剪（quickcuts 服务）前端模型：契约类型 + 状态归约/格式化纯函数（与组件解耦，直接可测）
-// 契约（后端并行开发中）：POST /quickcuts { job_id, scenario, use_llm } → 任务记录；
-// GET /quickcuts 全部记录（新→旧）。state 机：queued→analyzing→refining→rendering→done/failed
+// 契约：POST /quickcuts { job_id, cuts? } → 任务记录（cuts 缺省 = 服务端兜底粗剪）；
+// POST /quickcuts/analyze { job_id } → 事件菜单 + 兜底计划（只分析不渲染）；
+// GET /quickcuts 全部记录（新→旧）。state 机：queued→analyzing→rendering→done/failed
 
 export interface QuickcutAct {
   key: string;
-  label: string; // 中文幕名：出发/上路/爬坡/登顶/放坡/收尾
+  label: string; // 中文幕名：出发/上路/发力/制高点/极速/收尾（兜底组装）或 片段N（外部指定）
   start: number; // merged 视频秒
   end: number;
   reason: string; // 选取依据（UI 小字展示）
 }
 
 export interface QuickcutPlan {
-  scenario: string;
   acts: QuickcutAct[];
   dropped: { key: string; label: string; reason: string }[];
   totalS: number; // 成片时长（各幕求和）
@@ -20,22 +20,13 @@ export interface QuickcutPlan {
 export interface QuickcutRecord {
   id: string;
   job_id: string;
-  scenario?: string;
   state: string;
   percent?: number | null;
   plan?: QuickcutPlan | null;
   out?: string | null;
   error?: string | null;
-  llm_used?: boolean;
   created_at?: string;
   [k: string]: any; // 契约演进中，其余键透传
-}
-
-// 场景清单：目前只有 4+2 爬山；select 结构留着便于以后加
-export const QC_SCENARIOS = [{ value: 'ride_4plus2', label: '4+2 爬山' }];
-
-export function scenarioLabel(scenario: string | null | undefined): string {
-  return QC_SCENARIOS.find((s) => s.value === scenario)?.label ?? (scenario || '未知场景');
 }
 
 // 非终态 = 还需要轮询
@@ -47,15 +38,13 @@ export function hasActive(records: QuickcutRecord[]): boolean {
   return records.some((r) => isActiveState(r.state));
 }
 
-// 状态文案：analyzing 分析情节… / refining AI 优选镜头… / rendering 渲染中 xx%
+// 状态文案：analyzing 分析情节… / rendering 渲染中 xx%
 export function stateText(r: QuickcutRecord): string {
   switch (r.state) {
     case 'queued':
       return '排队中…';
     case 'analyzing':
       return '分析情节…';
-    case 'refining':
-      return 'AI 优选镜头…';
     case 'rendering':
       return r.percent != null ? `渲染中 ${Math.round(r.percent)}%` : '渲染中…';
     case 'done':

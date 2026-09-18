@@ -37,12 +37,12 @@ describe('postJson', () => {
 
 describe('putJson', () => {
   it('以 PUT 发 json 并返回解析结果', async () => {
-    const spy = vi.fn(async () => new Response('{"llm":{"provider":"lmstudio"}}', { status: 200 }));
+    const spy = vi.fn(async () => new Response('{"encoder":"h264_videotoolbox"}', { status: 200 }));
     vi.stubGlobal('fetch', spy);
-    expect(await putJson('/config', { llm: { provider: 'lmstudio' } })).toEqual({ llm: { provider: 'lmstudio' } });
+    expect(await putJson('/config', { encoder: 'h264_videotoolbox' })).toEqual({ encoder: 'h264_videotoolbox' });
     const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit];
     expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body as string)).toEqual({ llm: { provider: 'lmstudio' } });
+    expect(JSON.parse(init.body as string)).toEqual({ encoder: 'h264_videotoolbox' });
   });
   it('错误响应抛出服务端 error 文案', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"json body required"}', { status: 400 })));

@@ -5,7 +5,6 @@ import {
   stateText,
   stateShort,
   statePill,
-  scenarioLabel,
   isActiveState,
   hasActive,
   recordsForJob,
@@ -18,13 +17,11 @@ import type { QuickcutRecord } from '../../web/src/lib/quickcut.ts';
 const rec = (over: Partial<QuickcutRecord> = {}): QuickcutRecord => ({
   id: 'q1',
   job_id: 'j1',
-  scenario: 'ride_4plus2',
   state: 'analyzing',
   percent: null,
   plan: null,
   out: null,
   error: null,
-  llm_used: true,
   created_at: '2026-09-15T02:00:00Z',
   ...over,
 });
@@ -49,10 +46,9 @@ describe('fmtSec / fmtRange', () => {
 });
 
 describe('stateText / stateShort / statePill', () => {
-  it('进行态文案：排队/分析情节/AI 优选镜头', () => {
+  it('进行态文案：排队/分析情节', () => {
     expect(stateText(rec({ state: 'queued' }))).toBe('排队中…');
     expect(stateText(rec({ state: 'analyzing' }))).toBe('分析情节…');
-    expect(stateText(rec({ state: 'refining' }))).toBe('AI 优选镜头…');
   });
 
   it('渲染中带取整百分比；percent 缺失时省略数字', () => {
@@ -81,7 +77,7 @@ describe('isActiveState / hasActive', () => {
   it('done/failed 为终态，其余都要轮询', () => {
     expect(isActiveState('done')).toBe(false);
     expect(isActiveState('failed')).toBe(false);
-    for (const s of ['queued', 'analyzing', 'refining', 'rendering']) expect(isActiveState(s)).toBe(true);
+    for (const s of ['queued', 'analyzing', 'rendering']) expect(isActiveState(s)).toBe(true);
   });
 
   it('hasActive：任一非终态即真', () => {
@@ -113,13 +109,7 @@ describe('recordsForJob / latestForJob（历史归并）', () => {
   });
 });
 
-describe('scenarioLabel / fileName / quickcutVideoUrl', () => {
-  it('场景名映射；未知场景原样透出', () => {
-    expect(scenarioLabel('ride_4plus2')).toBe('4+2 爬山');
-    expect(scenarioLabel('ride_future')).toBe('ride_future');
-    expect(scenarioLabel(undefined)).toBe('未知场景');
-  });
-
+describe('fileName / quickcutVideoUrl', () => {
   it('取路径末段作文件名', () => {
     expect(fileName('/data/out/DJI_001_kuaijian.mp4')).toBe('DJI_001_kuaijian.mp4');
   });

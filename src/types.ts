@@ -157,8 +157,6 @@ export interface ActpipeConfig {
   cache: { ttl_days: number; max_gb: number };
   notify_sound: string;
   auth: { password_hash: string | null };
-  // BYOK LLM（快剪 L1 抛光用）；null/缺省 = 自动探测本机 LM Studio，字段见 server/llm.ts
-  llm?: import('./server/llm.ts').LlmConfig | null;
   strava: {
     client_id: string | null;
     client_secret: string | null;
