@@ -38,6 +38,8 @@ export const DEFAULTS: ActpipeConfig = {
   notify_sound: 'Glass',
   // 全站鉴权：password_hash 非空即开启（actpipe passwd <密码> 设置）；公网映射前务必设置
   auth: { password_hash: null },
+  // BYOK LLM（快剪 skill runner 用）：null = 自动探测本机 LM Studio；字段见 src/server/llm.ts
+  llm: null,
   // Strava 集成：授权后，插入相机时自动把活动 streams 合成为 .fit 入库（见 modules/strava.js）
   strava: { client_id: null, client_secret: null, access_token: null, refresh_token: null, expires_at: 0, athlete: null, auto_sync: true, sync_days: 14 },
 };

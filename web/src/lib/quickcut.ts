@@ -38,13 +38,15 @@ export function hasActive(records: QuickcutRecord[]): boolean {
   return records.some((r) => isActiveState(r.state));
 }
 
-// 状态文案：analyzing 分析情节… / rendering 渲染中 xx%
+// 状态文案：analyzing 分析情节… / refining AI 优选镜头… / rendering 渲染中 xx%
 export function stateText(r: QuickcutRecord): string {
   switch (r.state) {
     case 'queued':
       return '排队中…';
     case 'analyzing':
       return '分析情节…';
+    case 'refining':
+      return 'AI 优选镜头…';
     case 'rendering':
       return r.percent != null ? `渲染中 ${Math.round(r.percent)}%` : '渲染中…';
     case 'done':

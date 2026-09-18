@@ -371,18 +371,19 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 
 **公网映射前必做**：`node --experimental-strip-types bin/actpipe.ts passwd <密码>`（auth.password_hash 当前为 null，鉴权未启用；设了才开启全站拦截）。
 
-## 快剪（2026-09-15 落地，2026-09-18 重构为 agent skill 路线）
+## 快剪（2026-09-15 落地，2026-09-18 重构为 pi skill runner）
 
-**一句话**：对已完成的 merged dash 任务剪 ~30s 短片。产品内只有 L0 确定性内核（粗剪 + 事件菜单）；**精剪是产品外的 agent 活儿**——pi（`@earendil-works/pi-coding-agent`，BYOK 如 DeepSeek）挂 `skills/quickcut/` skill 驱动 CLI 完成，产品代码里没有任何 LLM 依赖。
+**一句话**：对已完成的 merged dash 任务剪 ~30s 短片。产品内嵌 pi（`@earendil-works/pi-agent-core` + `pi-ai`，BYOK）作为 harness；**快剪的导演逻辑不写死在代码里，而是 `skills/quickcut/SKILL.md`（Agent Skills 标准）——pi 加载它来圈幕**。同一份 SKILL.md，内嵌 harness 和外部 pi CLI 都能跑（skill 里有宿主差异表）。
 
 1. **事件菜单**（`src/modules/quickcut.ts` `detectEvents()`）：数据里有什么就出什么事件，叙事不写死。通用：片头/片尾（数据开始前/后相机多录的段）、首次移动、显著停顿×N（≥20s，最多 5 个，同类相距 <60s 合并留长者）、最长巡航（连续 ≥3m/s 的最长段）、最终停止、极速窗（10s 均速）；条件：功率峰（20s 窗）/冲刺（5s 爆发）/心率峰（10s 窗）/海拔极值（量程 >30m）/坡度翻转（持续爬坡接持续放坡）/GPS 折返点（距起点最远 >500m）。每事件带 `{type, fitS, videoS, windowS, score, desc}`；`videoS=null` = 不在任何视频段覆盖内，不可剪辑。**纪律：FIT 定位全走流逝秒（时间戳），绝不用样本下标——码表自动暂停会留时间空洞；FIT→视频映射逐段 `videoT = fitElapsed − offsetSeconds`。**基准固化在 `test/server/quickcut.test.ts`（真实骑行归一化样本 fixture，锚点全部经成片抽帧人工核验：功率峰 1420s/登顶 335m@1449s/极速 42.3km/h@1764s）。
-2. **兜底组装**（`assembleHeuristic()`）：六槽骨架（出发/上路/发力[功率峰>心率峰]/制高点/极速/收尾），槽内按类型序+score 挑事件，窗口重叠（2s 余量）让位、无候选丢弃给原因。dash 的「快剪 30s」按钮就是这个纯 L0 粗剪。
-3. **渲染**：`renderQuickcut()` N 幕 trim+concat 单次硬编，`<base>_kuaijian.mp4` 落源视频同目录（重名自增）。
+2. **兜底组装**（`assembleHeuristic()`）：六槽骨架（出发/上路/发力[功率峰>心率峰]/制高点/极速/收尾），槽内按类型序+score 挑事件，窗口重叠（2s 余量）让位、无候选丢弃给原因。dash 的「快剪 30s」关掉 AI 优选就是这个纯 L0 粗剪。
+3. **L1 skill runner**（`src/server/quickcut-agent.ts`）：`loadSkillInstructions()` 读 SKILL.md 正文（剥 frontmatter）+ 宿主适配段当 system prompt，事件菜单/兜底计划/视频信息当 user prompt。工具只有两个：**`ffmpeg`**（bin=ffmpeg/ffprobe，隔离工作目录执行，产物图片自动回传为 image 内容块——抽帧/探测让 agent 现场编，不预烘焙单用途工具）与 **`commit_cuts`**（唯一出口：`validateCuts` 把守物理合法——区间内/保序不重叠/幕数≤12/总时长≤180s，非法抛错报回 LLM 重试）。20 轮安全阀；**任何一环不可用（模型无视觉/skill 缺失/agent 异常/未提交）一律回退 L0 原 plan**（llm_used 记实际）。
+4. **BYOK**（`src/server/llm.ts`）：`config.llm = { provider, model, api_key, base_url, vision }`；默认 `lmstudio`（本机 `http://127.0.0.1:1234/v1`，帧不出机）；云端支持 openai/moonshot/anthropic/google/deepseek 等。不可达 → `resolveLlm` null → 跳过 L1。dash 有 LLM 设置面板（融合在 Strava 旁）：provider 动态表单 + 免保存直测 + 状态四态点。DeepSeek 推荐 `deepseek-v4-flash-vision-exp`（多模态，pi-ai 目录内置）。
 
-**接口**：Feathers service `quickcuts`（find/get/create/analyze）。`POST /quickcuts { job_id, cuts? }`：cuts 缺省 = 兜底粗剪；给了（`[{start,end,label?}]`，create 时 planFromCuts 干跑校验）= 外部精剪。串行通道消化（不挤主队列）：`queued→analyzing→rendering→done/failed`，记录落 `quickcuts.json`（重启中间态标 failed）。`POST /quickcuts/analyze { job_id }`（customMethodBridge 自定义方法）：只读——事件菜单 + 兜底计划 + video/segments/videoDurationS，不落记录。CLI：`actpipe quickcut analyze <job_id>` / `actpipe quickcut render <job_id> [--cuts cuts.json]`（2s 轮询到终态）。
+**接口**：Feathers service `quickcuts`（find/get/create/analyze/llm_status/llm_test，后三者走 customMethodBridge）。`POST /quickcuts { job_id, cuts?, use_llm? }`：cuts 缺省 → L0 兜底（use_llm 默认开则进 refining）；cuts 给了（`[{start,end,label?}]`，planFromCuts 干跑校验）→ 外部精剪，跳过 L1。串行通道：`queued→analyzing→[refining]→rendering→done/failed`，记录落 `quickcuts.json`（重启中间态标 failed）。`POST /quickcuts/analyze { job_id }`：只读——事件菜单+兜底计划+video/segments/videoDurationS，不落记录（外部 agent 的入口）。CLI：`actpipe quickcut analyze <job_id>` / `actpipe quickcut render <job_id> [--cuts cuts.json]`（2s 轮询到终态）。
 
-**Agent skill**（`skills/quickcut/`，Agent Skills 标准，pi/Claude Code/Kimi Code 通用）：SKILL.md 固化导演流程——analyze 提候选 → `scripts/frame.sh` 抽帧（960px jpeg）逐幕验证（路上没人/无遮挡/读数清晰/有速度感，每幕至少看两批）→ overlay 读数与事件 desc 数值交叉校验（对不上 = 时间轴没对齐，停手报告）→ 写 cuts.json 精剪 → 渲染后抽帧验片。原则：判断留给 LLM，机械留给代码——产品只暴露 analyze（算不了）和 render（要进任务系统）两个口子，抽帧/看图全是 agent 内置能力。
+**Skill**（`skills/quickcut/`，Agent Skills 标准，pi/Claude Code/Kimi Code 通用）：SKILL.md 固化导演流程——analyze 提候选 → 抽帧逐幕验证（路上没人/无遮挡/读数清晰/有速度感，每幕至少看两批）→ overlay 读数与事件 desc 数值交叉校验（对不上 = 时间轴没对齐，停手报告）→ 提交剪辑点 → 验片。宿主差异表覆盖两种运行方式；`scripts/frame.sh` 供 CLI 宿主抽帧。原则：判断留给 LLM，机械留给代码——产品只暴露 analyze（算不了）、render（要进任务系统）和 ffmpeg（通用能力）三类能力。
 
-**踩坑记录**：Feathers service 内部禁用 ES `#` 私有方法（`wrapService` 用 `Object.create` 包装后私有品牌丢失，500）——用 TS `private`。
+**踩坑记录**：① Feathers service 内部禁用 ES `#` 私有方法（`wrapService` 用 `Object.create` 包装后私有品牌丢失，500）——用 TS `private`；② pi `AgentTool.execute` 返回值 `details` 必填；③ pi-ai `models.complete` 失败不 reject（查 `stopReason:'error'/'aborted'` + errorMessage），llm_test 必须检查；④ openai-completions 适配器强制 apiKey——keyless 本地端点由 llm.ts 补占位 key `actpipe-keyless`。
 
-~~（2026-09-15 的产品内嵌 L1 agent + BYOK LLM 面板已随本次重构移除：`src/server/quickcut-agent.ts`/`src/server/llm.ts`/`LlmPanel.svelte`/`llm_status`/`llm_test` 端点全部删除。教训：agent 不该长在产品里——skill 路线下 pi 本身就是 harness，同一份 SKILL.md 任何兼容 Agent Skills 标准的宿主都能跑。）~~
+~~（2026-09-15 初版 L1 是写死六幕叙事的硬编码 agent：sample_frames/commit_cuts 工具 + 时长锁定只许平移。本次重构把叙事挪进 SKILL.md——lesson：agent 的工作流应该住在 skill 文件里可迭代，代码里只留工具与护栏。）~~

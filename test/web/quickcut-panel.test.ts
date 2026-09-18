@@ -70,17 +70,22 @@ describe('QuickcutPanel', () => {
     expect(hist.textContent).not.toContain('失败'); // j2 与最新一条都不在历史里
   });
 
-  it('快剪 30s 一键提交（兜底粗剪无选项），带上 jobId', async () => {
+  it('快剪 30s 一键提交：默认 AI 优选开，提交带上 jobId 与 useLlm', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(QuickcutPanel, { props: { jobId: 'j1', records: [], onSubmit } });
+    const ai = document.querySelector<HTMLInputElement>('input[type=checkbox]')!;
+    expect(ai.checked).toBe(true);
+    await fireEvent.click(ai); // 关掉 AI 优选
     await fireEvent.click(screen.getByText('快剪 30s'));
-    expect(onSubmit).toHaveBeenCalledWith('j1');
+    expect(onSubmit).toHaveBeenCalledWith('j1', false);
   });
 
-  it('提交失败展示服务端错误文案', async () => {
-    const onSubmit = vi.fn().mockRejectedValue(new Error('任务 j1 缺少 FIT 样本'));
-    render(QuickcutPanel, { props: { jobId: 'j1', records: [], onSubmit } });
-    await fireEvent.click(screen.getByText('快剪 30s'));
-    expect(await screen.findByText('任务 j1 缺少 FIT 样本')).toBeTruthy();
+  it('AI 优选旁的小字随 llmStatus：configured 显示将用模型，否则提示仅按数据优选', async () => {
+    const { unmount } = render(QuickcutPanel, { props: { jobId: 'j1', records: [], llmStatus: { configured: true, describe: 'lmstudio/qwen' } } });
+    expect(screen.getByText('将使用 lmstudio/qwen')).toBeTruthy();
+    unmount();
+
+    render(QuickcutPanel, { props: { jobId: 'j1', records: [] } }); // 未传 llmStatus → 按未配置
+    expect(screen.getByText('未配置 LLM，仅按数据优选')).toBeTruthy();
   });
 });

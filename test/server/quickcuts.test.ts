@@ -240,3 +240,99 @@ test('进程重启：加载时中间态任务标记 failed（进程重启中断�
   }
   assert.equal((await svc.get('zombie-done')).state, 'done'); // 已完成的不动
 });
+
+
+// ---------- llm_status / llm_test（自定义方法，全部走注入 stub，禁真网络） ----------
+
+// 假 ResolvedLlm：llm_status/llm_test 只读 describe/vision 两个字段
+const fakeResolved = (over: Record<string, unknown> = {}) =>
+  ({ describe: 'lmstudio/qwen3 @ http://127.0.0.1:1234/v1', vision: true, ...over }) as any;
+
+const mkLlmService = (deps: Partial<import('../../src/server/quickcuts.ts').QuickcutDeps> = {}) =>
+  new QuickcutService({
+    queue: { get: () => null },
+    configRef: { current: {} as ActpipeConfig },
+    log: () => {},
+    ...deps,
+  });
+
+test('llm_status：未配置（resolve null）→ configured:false', async () => {
+  const svc = mkLlmService({ resolveLlmFn: async () => null });
+  const r = await svc.llm_status();
+  assert.deepEqual(r, { configured: false, describe: null, vision: false });
+});
+
+test('llm_status：注入假 resolved → configured:true 且 describe/vision 透传', async () => {
+  const svc = mkLlmService({ resolveLlmFn: async () => fakeResolved({ vision: false }) });
+  const r = await svc.llm_status();
+  assert.deepEqual(r, { configured: true, describe: 'lmstudio/qwen3 @ http://127.0.0.1:1234/v1', vision: false });
+});
+
+test('llm_test：resolve null → ok:false（未配置或端点不可达）', async () => {
+  const svc = mkLlmService({ resolveLlmFn: async () => null });
+  const r = await svc.llm_test({});
+  assert.deepEqual(r, { ok: false, error: '未配置或端点不可达', describe: null, vision: false, latency_ms: null });
+});
+
+test('llm_test：resolve ok + 假 completeFn → ok:true 且 latency_ms 是数字（fresh 解析 + body.llm 覆盖）', async () => {
+  const seen: { resolveArgs: any[]; pingCtx: any } = { resolveArgs: [], pingCtx: null };
+  const svc = mkLlmService({
+    resolveLlmFn: (async (...args: any[]) => {
+      seen.resolveArgs.push(args);
+      return fakeResolved();
+    }) as any,
+    completeFn: (async (_llm: any, ctx: any) => {
+      seen.pingCtx = ctx;
+      return { content: 'ok' };
+    }) as any,
+  });
+  const override = { provider: 'openai-compat', base_url: 'http://x/v1', model: 'm' };
+  const r = await svc.llm_test({ llm: override });
+  assert.equal(r.ok, true);
+  assert.equal(r.error, null);
+  assert.equal(r.describe, 'lmstudio/qwen3 @ http://127.0.0.1:1234/v1');
+  assert.equal(r.vision, true);
+  assert.ok(typeof r.latency_ms === 'number' && r.latency_ms >= 0, `latency_ms=${r.latency_ms}`);
+  // fresh 重解析 + body.llm 优先于已保存配置
+  assert.deepEqual(seen.resolveArgs, [[override, { fresh: true }]]);
+  // ping 是真实极小一次性对话
+  assert.equal(seen.pingCtx.messages.length, 1);
+  assert.equal(seen.pingCtx.messages[0].role, 'user');
+  assert.equal(seen.pingCtx.messages[0].content, '回复 ok 两个字');
+  assert.ok(typeof seen.pingCtx.messages[0].timestamp === 'number');
+});
+
+test('llm_test：completeFn 返回 stopReason=error（pi-ai 失败不 reject）→ ok:false 且 error 取 errorMessage', async () => {
+  const svc = mkLlmService({
+    resolveLlmFn: async () => fakeResolved(),
+    completeFn: (async () => ({ stopReason: 'error', errorMessage: 'fetch failed: ECONNREFUSED' })) as any,
+  });
+  const r = await svc.llm_test({});
+  assert.equal(r.ok, false);
+  assert.ok(r.error?.includes('ECONNREFUSED'), `error=${r.error}`);
+  assert.equal(r.latency_ms, null);
+});
+
+// ---------- L1 接线：use_llm 默认开，LLM 无视觉时 L1 空跑、plan 不变 ----------
+
+test('refining：use_llm 默认开；假 LLM 无视觉 → L1 空跑回退 L0，plan 不变；use_llm:false 完全不走 L1', async () => {
+  const job = mkJobDir('job-l1');
+  const svc = new QuickcutService({
+    queue: { get: (id: string) => (id === job.id ? (job as Job) : null) },
+    configRef: { current: {} as ActpipeConfig },
+    log: () => {},
+    resolveLlmFn: async () => fakeResolved({ vision: false }), // 无视觉 → refineActsWithAgent 直接回退
+    render: (async ({ out, onProgress }: any) => {
+      onProgress(100);
+      return { out, durationS: 12 };
+    }) as QuickcutRenderFn,
+  });
+  const rec = await svc.create({ job_id: job.id });
+  const done = await waitState(svc, rec.id, 'done');
+  // 无视觉 → plan 保持 L0 兜底四幕（offset 0 无车内段）
+  assert.deepEqual(done.plan.acts.map((a: any) => a.key), ['rollout', 'effort', 'high', 'speed']);
+  // 关掉 use_llm → L1 完全不走
+  const rec2 = await svc.create({ job_id: job.id, use_llm: false });
+  const done2 = await waitState(svc, rec2.id, 'done');
+  assert.equal(done2.llm_used, false);
+});

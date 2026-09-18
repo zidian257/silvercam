@@ -12,14 +12,18 @@
     quickcutVideoUrl,
   } from '../quickcut.ts';
   import type { QuickcutRecord } from '../quickcut.ts';
+  import { llmHintText } from '../llm.ts';
+  import type { LlmStatus } from '../llm.ts';
 
   interface Props {
     jobId: string;
     records?: QuickcutRecord[]; // 全部快剪记录（面板内部按 jobId 归并，最新一条优先展示）
-    onSubmit?: (jobId: string) => Promise<void> | void;
+    llmStatus?: LlmStatus | null; // dash 挂载时拉的 llm_status；null = 未配置/未拉到
+    onSubmit?: (jobId: string, useLlm: boolean) => Promise<void> | void;
   }
-  let { jobId, records = [], onSubmit = () => {} }: Props = $props();
+  let { jobId, records = [], llmStatus = null, onSubmit = () => {} }: Props = $props();
 
+  let useLlm = $state(true);
   let submitting = $state(false);
   let submitErr = $state('');
 
@@ -31,7 +35,7 @@
     submitting = true;
     submitErr = '';
     try {
-      await onSubmit(jobId);
+      await onSubmit(jobId, useLlm);
     } catch (e) {
       submitErr = (e as Error).message;
     } finally {
@@ -43,8 +47,14 @@
 <div class="qc">
   <div class="head">
     <span class="ttl">快剪</span>
-    <button class="btn primary" disabled={submitting} onclick={submit}>{submitting ? '提交中…' : '快剪 30s'}</button>
+    <div class="actions">
+      <label class="ai" title="勾选后由 pi 加载快剪 skill 自由圈幕（看画面选镜头）；不勾则只用 L0 事件菜单的确定性粗剪">
+        <input type="checkbox" bind:checked={useLlm}> AI 优选镜头
+      </label>
+      <button class="btn primary" disabled={submitting} onclick={submit}>{submitting ? '提交中…' : '快剪 30s'}</button>
+    </div>
   </div>
+  <div class="llmhint">{llmHintText(llmStatus)}</div>
   {#if submitErr}<div class="err">{submitErr}</div>{/if}
 
   {#if latest}
@@ -58,6 +68,7 @@
     {:else if latest.state === 'done'}
       <div class="status">
         <span class="pill ok">已完成</span>
+        {#if latest.llm_used}<span class="pill mute">AI 优选</span>{/if}
         {#if latest.out}
           <span class="fname">{fileName(latest.out)}</span>
           <a class="btn" href={quickcutVideoUrl(latest.out)} target="_blank" rel="noreferrer">打开</a>
@@ -111,6 +122,9 @@
   .qc { background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-card); padding: 12px 14px; }
   .head { display: flex; align-items: center; justify-content: space-between; }
   .ttl { font-size: 13px; font-weight: 600; color: var(--text-2); }
+  .actions { display: flex; align-items: center; gap: 12px; }
+  .ai { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-1); cursor: pointer; }
+  .llmhint { margin-top: 6px; font-size: 11px; color: var(--text-3); }
   .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
   .pulse {
     width: 4px;

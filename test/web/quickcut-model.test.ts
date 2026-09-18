@@ -46,9 +46,10 @@ describe('fmtSec / fmtRange', () => {
 });
 
 describe('stateText / stateShort / statePill', () => {
-  it('进行态文案：排队/分析情节', () => {
+  it('进行态文案：排队/分析情节/AI 优选镜头', () => {
     expect(stateText(rec({ state: 'queued' }))).toBe('排队中…');
     expect(stateText(rec({ state: 'analyzing' }))).toBe('分析情节…');
+    expect(stateText(rec({ state: 'refining' }))).toBe('AI 优选镜头…');
   });
 
   it('渲染中带取整百分比；percent 缺失时省略数字', () => {
@@ -77,7 +78,7 @@ describe('isActiveState / hasActive', () => {
   it('done/failed 为终态，其余都要轮询', () => {
     expect(isActiveState('done')).toBe(false);
     expect(isActiveState('failed')).toBe(false);
-    for (const s of ['queued', 'analyzing', 'rendering']) expect(isActiveState(s)).toBe(true);
+    for (const s of ['queued', 'analyzing', 'refining', 'rendering']) expect(isActiveState(s)).toBe(true);
   });
 
   it('hasActive：任一非终态即真', () => {

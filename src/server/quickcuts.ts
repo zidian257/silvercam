@@ -1,9 +1,11 @@
-// 快剪任务服务：对已出片任务（jobs done）做「L0 确定性分析 → 硬编渲染」。
-// 两条路：
+// 快剪任务服务：对已出片任务（jobs done）做「L0 确定性分析 → 可选 L1 skill runner 抛光 → 硬编渲染」。
+// 三条路：
 //   粗剪——create 只给 job_id，服务端 assembleHeuristic 从事件菜单兜底圈 ~30s；
-//   精剪——agent（pi + quickcut skill）先 POST /quickcuts/analyze 拿事件菜单，
-//         抽帧验证后把精确剪辑点 cuts 交给 create 渲染。
-// 快剪是轻任务（~30s 硬编），走自己的串行通道一次一个，不挤主队列 JobQueue。
+//   AI 精剪——create 给 use_llm:true（默认），L1 动态加载 quickcut-agent.ts：pi 挂 skills/quickcut/
+//            SKILL.md 自由圈幕；agent 缺失/LLM 不可达/调用失败都静默回退 L0 原 plan（llm_used 记实际）；
+//   外部精剪——agent（外部 pi CLI + 同一 SKILL.md）先 POST /quickcuts/analyze 拿事件菜单，
+//            抽帧验证后把精确剪辑点 cuts 交给 create 渲染（跳过 L1）。
+// 快剪是轻任务（~30s 硬编 + 可选 L1 数分钟），走自己的串行通道一次一个，不挤主队列 JobQueue。
 // 记录持久化 <ACTPIPE_HOME>/quickcuts.json；渲染不可断点续跑，进程重启时中间态任务直接标记 failed。
 // 注意：Feathers wrapService 用 Object.create(实例) 的包装对象调方法，ES #私有方法会丢品牌检查
 // （Receiver must be an instance of class）——Feathers service 只能用 TS private（擦除型），不能跑 #。
@@ -16,10 +18,15 @@ import { paths, ensureDirs } from '../lib/paths.ts';
 import { readJson, run, writeJsonAtomic } from '../lib/util.ts';
 import { assembleHeuristic, detectEvents, normalizeSamples, planFromCuts, quickcutOutputPathFor, renderQuickcut } from '../modules/quickcut.ts';
 import type { QuickcutPlan, QuickcutSegment } from '../modules/quickcut.ts';
+import { resolveLlm, complete } from './llm.ts';
 import type { Job, SegmentArtifacts } from '../types.ts';
 import type { ConfigRef, LogFn } from './services/config.ts';
 
-export type QuickcutState = 'queued' | 'analyzing' | 'rendering' | 'done' | 'failed';
+// L1 skill runner 模块 specifier 必须是运行期字符串：文件可能被移除，
+// 字面量 specifier 会让 tsc 静态解析报模块缺失、运行时启动即崩
+const AGENT_MODULE: string = './quickcut-agent.ts';
+
+export type QuickcutState = 'queued' | 'analyzing' | 'refining' | 'rendering' | 'done' | 'failed';
 
 export interface QuickcutCut {
   start: number;
@@ -31,6 +38,8 @@ export interface QuickcutRecord {
   id: string;
   job_id: string;
   cuts: QuickcutCut[] | null; // 创建入参：外部指定的精确剪辑点；null = 服务端兜底粗剪
+  use_llm: boolean;  // 创建入参：是否尝试 L1 抛光（cuts 存在时忽略）
+  llm_used: boolean; // 结果：L1 实际是否生效（未配置/不可达/agent 缺失/失败都为 false）
   state: QuickcutState;
   percent: number;
   plan: QuickcutPlan | null;
@@ -58,6 +67,8 @@ export interface QuickcutDeps {
   configRef: ConfigRef;
   log?: LogFn;
   render?: QuickcutRenderFn;
+  resolveLlmFn?: typeof resolveLlm; // 测试注入 stub，避免触碰真实 LLM 端点
+  completeFn?: typeof complete;     // llm_test 的 ping 调用口，测试注入 stub 禁真网络
 }
 
 // 视频真实时长用 ffprobe 读输出文件本身，不信各段 probe 之和（封装间隙/精度会累计误差）
@@ -68,20 +79,35 @@ async function probeDurationS(file: string): Promise<number> {
   return d;
 }
 
+// ping 的限时护栏：llm.ts 的 complete 不收 signal（该文件不动），在调用侧用 AbortSignal.timeout 竞速兜底
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  const signal = AbortSignal.timeout(ms);
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      signal.addEventListener('abort', () => reject(new Error(`LLM ping 超时（${Math.round(ms / 1000)}s）`)), { once: true });
+    }),
+  ]);
+}
+
 export class QuickcutService {
   queue: JobLookup;
   configRef: ConfigRef;
   log: LogFn;
   render: QuickcutRenderFn;
+  resolveLlmFn: typeof resolveLlm;
+  completeFn: typeof complete;
   file: string;
   items: QuickcutRecord[];
   lane: Promise<unknown>; // 串行消化通道：上一个任务的 promise 链下一个
 
-  constructor({ queue, configRef, log = console.log, render = renderQuickcut }: QuickcutDeps) {
+  constructor({ queue, configRef, log = console.log, render = renderQuickcut, resolveLlmFn = resolveLlm, completeFn = complete }: QuickcutDeps) {
     this.queue = queue;
     this.configRef = configRef;
     this.log = log;
     this.render = render;
+    this.resolveLlmFn = resolveLlmFn;
+    this.completeFn = completeFn;
     ensureDirs();
     this.file = path.join(paths.home, 'quickcuts.json');
     this.items = readJson<QuickcutRecord[]>(this.file, []);
@@ -134,6 +160,8 @@ export class QuickcutService {
       id: crypto.randomUUID().slice(0, 8),
       job_id: job.id,
       cuts,
+      use_llm: body.use_llm !== false,
+      llm_used: false,
       state: 'queued',
       percent: 0,
       plan: null,
@@ -145,6 +173,33 @@ export class QuickcutService {
     this.save();
     this.enqueue(rec);
     return { ...rec }; // 返回快照：异步消化立即开始，调用方拿到的是入队时刻
+  }
+
+  // POST /quickcuts/llm_status：缓存的 resolveLlm 读配置状态（不发网络探测，快）；body 忽略
+  async llm_status() {
+    const llm = await this.resolveLlmFn(this.configRef.current.llm ?? null);
+    return { configured: !!llm, describe: llm?.describe ?? null, vision: llm?.vision ?? false };
+  }
+
+  // POST /quickcuts/llm_test：fresh 重解析 + 真实极小 ping 测延迟；body.llm 缺省时测已保存配置
+  async llm_test(data: any) {
+    const cfg = (data?.llm ?? this.configRef.current.llm) ?? null;
+    const llm = await this.resolveLlmFn(cfg, { fresh: true });
+    if (!llm) return { ok: false, error: '未配置或端点不可达', describe: null, vision: false, latency_ms: null };
+    const t0 = Date.now();
+    try {
+      const msg: any = await withTimeout(
+        this.completeFn(llm, { messages: [{ role: 'user', content: '回复 ok 两个字', timestamp: Date.now() }] }),
+        15000,
+      );
+      // pi-ai 的失败不 reject：AssistantMessage.stopReason='error'/'aborted'，详情在 errorMessage
+      if (msg?.stopReason === 'error' || msg?.stopReason === 'aborted') {
+        throw new Error(msg.errorMessage ?? `LLM ping 失败（stopReason=${msg.stopReason}）`);
+      }
+      return { ok: true, describe: llm.describe, vision: llm.vision, latency_ms: Date.now() - t0, error: null };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message, describe: llm.describe, vision: llm.vision, latency_ms: null };
+    }
   }
 
   // POST /quickcuts/analyze { job_id }：只分析不渲染——事件菜单 + 兜底计划 + 视频信息。
@@ -216,18 +271,45 @@ export class QuickcutService {
       if (!job) throw new Error(`job not found: ${rec.job_id}`);
       const { video, grid, segments } = this.prepare(job);
 
-      // analyzing：外部给了 cuts 就直接采纳，否则 L0 兜底组装圈幕
+      // analyzing：外部给了 cuts 就直接采纳；否则 L0 兜底组装圈幕（事件菜单同时备好供 L1 使用）
       rec.state = 'analyzing';
       this.save();
+      const samples = normalizeSamples(grid.samples, grid.t0_ms);
+      const videoDurationS = await probeDurationS(video);
       if (rec.cuts) {
         rec.plan = planFromCuts(rec.cuts);
       } else {
-        const samples = normalizeSamples(grid.samples, grid.t0_ms);
-        const videoDurationS = await probeDurationS(video);
         rec.plan = assembleHeuristic({ samples, segments, videoDurationS });
       }
       this.save();
       this.log(`[quickcuts] ${rec.id}: ${rec.cuts ? '外部剪辑点' : 'L0 兜底'}出 ${rec.plan.acts.length} 幕共 ${rec.plan.totalS.toFixed(1)}s（丢弃 ${rec.plan.dropped.length} 幕）`);
+
+      // refining：可选 L1 skill runner；任何一环不可用都回退 L0，绝不让任务失败（外部 cuts 不参与）
+      rec.llm_used = false;
+      if (!rec.cuts && rec.use_llm) {
+        rec.state = 'refining';
+        this.save();
+        try {
+          const llm = await this.resolveLlmFn(this.configRef.current.llm ?? null);
+          if (!llm) {
+            this.log(`[quickcuts] ${rec.id}: LLM 未配置/不可达，沿用 L0 plan`);
+          } else {
+            const mod: any = await import(AGENT_MODULE).catch(() => null);
+            if (typeof mod?.refineActsWithAgent !== 'function') {
+              this.log(`[quickcuts] ${rec.id}: L1 skill runner 未就绪，沿用 L0 plan`);
+            } else {
+              const events = detectEvents(samples, { segments, videoDurationS });
+              rec.plan = await mod.refineActsWithAgent({ video, videoDurationS, events, plan: rec.plan, llm, log: this.log });
+              rec.llm_used = true;
+              this.log(`[quickcuts] ${rec.id}: L1 抛光完成（${llm.describe}）`);
+            }
+          }
+        } catch (e) {
+          rec.llm_used = false;
+          this.log(`[quickcuts] ${rec.id}: L1 抛光失败，沿用 L0 plan：${(e as Error).message}`);
+        }
+        this.save();
+      }
 
       // rendering：N 幕 trim + concat 单次硬编；输出与成片同目录（重名自增）
       rec.state = 'rendering';

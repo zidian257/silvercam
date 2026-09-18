@@ -41,7 +41,7 @@ const CUSTOM_METHOD_ROUTES = [
   { re: /^(\/jobs\/[^/]+)\/(fit|offset|bias)$/, withId: true },
   { re: /^(\/api\/inbox)\/(commit)$/, withId: false },
   { re: /^(\/api\/inbox\/[^/]+)\/(align|reopen)$/, withId: true },
-  { re: /^(\/quickcuts)\/(analyze)$/, withId: false },
+  { re: /^(\/quickcuts)\/(llm_test|llm_status|analyze)$/, withId: false },
 ];
 function customMethodBridge(req: Request, res: Response, next: NextFunction) {
   if (req.method !== 'POST') return next();
@@ -82,7 +82,7 @@ export function createApp({ queue, configRef, inbox = null, refs = {} }: { queue
 
   app.use('jobs', new JobsService({ queue }), { methods: ['find', 'get', 'create', 'fit', 'offset', 'bias'], events: ['progress'] });
   // 快剪：对已出片任务剪 ~30s 短片；轻任务走服务内部串行通道，不挤主队列
-  app.use('quickcuts', new QuickcutService({ queue, configRef }), { methods: ['find', 'get', 'create', 'analyze'] });
+  app.use('quickcuts', new QuickcutService({ queue, configRef }), { methods: ['find', 'get', 'create', 'analyze', 'llm_status', 'llm_test'] });
   app.use('api/inbox', new InboxService(ctx), { methods: ['find', 'remove', 'commit', 'align', 'reopen'] });
   app.use('api/fits', new FitsService({ configRef }), { methods: ['find', 'create'] });
   app.use('config', new ConfigService(ctx), { methods: ['find', 'update'] });
