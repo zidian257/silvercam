@@ -88,4 +88,19 @@ describe('QuickcutPanel', () => {
     render(QuickcutPanel, { props: { jobId: 'j1', records: [] } }); // 未传 llmStatus → 按未配置
     expect(screen.getByText('未配置 LLM，仅按数据优选')).toBeTruthy();
   });
+
+  it('日志按钮：拉取并渲染日志文本，再点收起', async () => {
+    const fetchMock = vi.fn(async () => new Response('[10:00:00] L0 兜底出 4 幕\n[10:01:00] done → /x.mp4', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(QuickcutPanel, { props: { jobId: 'j1', records: [rec({ state: 'done', out: '/x/y.mp4' })] } });
+      await fireEvent.click(screen.getByText('日志'));
+      await screen.findByText(/L0 兜底出 4 幕/);
+      expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe('/quickcuts/q1/log');
+      await fireEvent.click(screen.getByText('收起日志'));
+      expect(screen.queryByText(/L0 兜底出 4 幕/)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

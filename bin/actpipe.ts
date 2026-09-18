@@ -105,6 +105,7 @@ const HELP = `actpipe — Action 5 Pro + FIT 仪表盘叠加流水线
   actpipe preview --video x --fit y -t 1:23 [--offset s] [--skin s] [--lut l] [--out p.png]
   actpipe quickcut analyze <job_id>    快剪事件菜单 + 兜底计划（只分析不渲染）
   actpipe quickcut render <job_id> [--cuts cuts.json]  粗剪（无 cuts）/ 按精确剪辑点渲染
+  actpipe quickcut logs <quickcut_id>  快剪任务日志（L0/L1 agent/渲染全程）
   actpipe config [--set k v]         读 / 改全局配置
   actpipe luts                       LUT 预设列表
 
@@ -174,8 +175,14 @@ async function main(): Promise<void> {
 
     case 'quickcut': {
       const sub = args[1];
+      if (sub === 'logs') {
+        if (!args[2]) throw new Error('用法: actpipe quickcut logs <quickcut_id>');
+        const res = await api('GET', `/quickcuts/${args[2]}/log`);
+        process.stdout.write(await res.text());
+        break;
+      }
       const jobId = args[2];
-      if ((sub !== 'analyze' && sub !== 'render') || !jobId) throw new Error('用法: actpipe quickcut analyze <job_id> | actpipe quickcut render <job_id> [--cuts cuts.json]');
+      if ((sub !== 'analyze' && sub !== 'render') || !jobId) throw new Error('用法: actpipe quickcut analyze <job_id> | actpipe quickcut render <job_id> [--cuts cuts.json] | actpipe quickcut logs <quickcut_id>');
       if (sub === 'analyze') {
         const res = await api('POST', '/quickcuts/analyze', { job_id: jobId });
         console.log(JSON.stringify(await res.json(), null, 2));

@@ -336,3 +336,19 @@ test('refining：use_llm 默认开；假 LLM 无视觉 → L1 空跑回退 L0，
   const done2 = await waitState(svc, rec2.id, 'done');
   assert.equal(done2.llm_used, false);
 });
+
+// ---------- 日志落盘 ----------
+
+test('日志：全程落盘 <home>/quickcuts/<id>.log（开始/L0/done 行，带时间戳）', async () => {
+  const job = mkJobDir('job-log');
+  const svc = mkService(new Map([[job.id, job]]));
+  const rec = await svc.create({ job_id: job.id, use_llm: false });
+  await waitState(svc, rec.id, 'done');
+  const file = QuickcutService.logFileFor(rec.id);
+  assert.ok(fs.existsSync(file), '日志文件应落盘');
+  const text = fs.readFileSync(file, 'utf8');
+  assert.match(text, /开始：job=job-log/);
+  assert.match(text, /L0 兜底出 4 幕/);
+  assert.match(text, /done →/);
+  assert.match(text.split('\n')[0], /^\[\d{2}:\d{2}:\d{2}\] /);
+});

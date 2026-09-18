@@ -199,6 +199,35 @@ ${planDigest(plan)}
 按 skill 流程开始：先圈候选，再逐幕抽帧验证（不满意就调窗口再看），交叉校验 overlay 读数与事件数值，最后 commit_cuts 提交。`;
 }
 
+// ---------- 事件日志 ----------
+
+// 助手消息 → 纯文本（content 可能是 string 或 block 数组）
+function extractText(msg: any): string {
+  if (!msg || msg.role !== 'assistant') return '';
+  const c = msg.content;
+  if (typeof c === 'string') return c.trim();
+  if (Array.isArray(c)) return c.filter((b) => b?.type === 'text').map((b) => b.text).join('\n').trim();
+  return '';
+}
+
+// Agent 事件 → 一行日志（null = 不记）：只记工具调用与助手文字输出，流式增量事件太吵不记
+export function formatAgentEvent(ev: any): string | null {
+  if (ev?.type === 'tool_execution_start') {
+    if (ev.toolName === 'ffmpeg') {
+      const bin = ev.args?.bin ?? 'ffmpeg';
+      const args = Array.isArray(ev.args?.args) ? ev.args.args.join(' ') : '';
+      return `→ ${bin} ${args}`.slice(0, 300);
+    }
+    if (ev.toolName === 'commit_cuts') return `→ commit_cuts ${JSON.stringify(ev.args?.cuts ?? [])}`;
+    return `→ ${String(ev.toolName)}`;
+  }
+  if (ev?.type === 'message_end') {
+    const text = extractText(ev.message);
+    return text ? `agent: ${text.slice(0, 500)}` : null;
+  }
+  return null;
+}
+
 // ---------- 主入口 ----------
 
 export interface QuickcutAgentLike {
@@ -247,6 +276,11 @@ export async function refineActsWithAgent(opts: {
         shouldStopAfterTurn: () => committedRef.cuts != null || ++turns >= MAX_TURNS,
       });
       a.state.tools = tools;
+      // 事件流记日志：工具调用（ffmpeg 命令/commit_cuts 剪辑点）与助手文字输出
+      a.subscribe((ev) => {
+        const line = formatAgentEvent(ev);
+        if (line) log(`[quickcut] ${line}`);
+      });
       agent = a;
     }
     log(`[quickcut] L1 启动（${llm.describe}）：skill 驱动自由圈幕，最多 ${MAX_TURNS} 轮`);

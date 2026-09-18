@@ -224,6 +224,21 @@ export class QuickcutService {
 
   // ---------- 内部 ----------
 
+  // 每条快剪的全程日志：<ACTPIPE_HOME>/quickcuts/<id>.log（与 jobs 的 log.txt 同套路）
+  static logFileFor(id: string): string {
+    return path.join(paths.home, 'quickcuts', `${id}.log`);
+  }
+
+  // 落盘 + 透传 pm2 控制台；写盘失败不挡主流程
+  private recLog(rec: QuickcutRecord, msg: string) {
+    try {
+      const file = QuickcutService.logFileFor(rec.id);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.appendFileSync(file, `[${new Date().toTimeString().slice(0, 8)}] ${msg}\n`);
+    } catch { /* 日志仅诊断用途 */ }
+    this.log(`[quickcuts] ${rec.id}: ${msg}`);
+  }
+
   private save() {
     writeJsonAtomic(this.file, this.items);
   }
@@ -270,6 +285,7 @@ export class QuickcutService {
       const job = this.queue.get(rec.job_id);
       if (!job) throw new Error(`job not found: ${rec.job_id}`);
       const { video, grid, segments } = this.prepare(job);
+      this.recLog(rec, `开始：job=${rec.job_id} 视频 ${video}`);
 
       // analyzing：外部给了 cuts 就直接采纳；否则 L0 兜底组装圈幕（事件菜单同时备好供 L1 使用）
       rec.state = 'analyzing';
@@ -282,7 +298,7 @@ export class QuickcutService {
         rec.plan = assembleHeuristic({ samples, segments, videoDurationS });
       }
       this.save();
-      this.log(`[quickcuts] ${rec.id}: ${rec.cuts ? '外部剪辑点' : 'L0 兜底'}出 ${rec.plan.acts.length} 幕共 ${rec.plan.totalS.toFixed(1)}s（丢弃 ${rec.plan.dropped.length} 幕）`);
+      this.recLog(rec, `${rec.cuts ? '外部剪辑点' : 'L0 兜底'}出 ${rec.plan.acts.length} 幕共 ${rec.plan.totalS.toFixed(1)}s（丢弃 ${rec.plan.dropped.length} 幕）`);
 
       // refining：可选 L1 skill runner；任何一环不可用都回退 L0，绝不让任务失败（外部 cuts 不参与）
       rec.llm_used = false;
@@ -292,21 +308,21 @@ export class QuickcutService {
         try {
           const llm = await this.resolveLlmFn(this.configRef.current.llm ?? null);
           if (!llm) {
-            this.log(`[quickcuts] ${rec.id}: LLM 未配置/不可达，沿用 L0 plan`);
+            this.recLog(rec, 'LLM 未配置/不可达，沿用 L0 plan');
           } else {
             const mod: any = await import(AGENT_MODULE).catch(() => null);
             if (typeof mod?.refineActsWithAgent !== 'function') {
-              this.log(`[quickcuts] ${rec.id}: L1 skill runner 未就绪，沿用 L0 plan`);
+              this.recLog(rec, 'L1 skill runner 未就绪，沿用 L0 plan');
             } else {
               const events = detectEvents(samples, { segments, videoDurationS });
-              rec.plan = await mod.refineActsWithAgent({ video, videoDurationS, events, plan: rec.plan, llm, log: this.log });
+              rec.plan = await mod.refineActsWithAgent({ video, videoDurationS, events, plan: rec.plan, llm, log: (m: string) => this.recLog(rec, m) });
               rec.llm_used = true;
-              this.log(`[quickcuts] ${rec.id}: L1 抛光完成（${llm.describe}）`);
+              this.recLog(rec, `L1 抛光完成（${llm.describe}）`);
             }
           }
         } catch (e) {
           rec.llm_used = false;
-          this.log(`[quickcuts] ${rec.id}: L1 抛光失败，沿用 L0 plan：${(e as Error).message}`);
+          this.recLog(rec, `L1 抛光失败，沿用 L0 plan：${(e as Error).message}`);
         }
         this.save();
       }
@@ -319,7 +335,7 @@ export class QuickcutService {
         video,
         acts: rec.plan!.acts,
         out,
-        log: (m: string) => this.log(m),
+        log: (m: string) => this.recLog(rec, m),
         onProgress: (p: number) => {
           rec.percent = p; // 进度只留在内存（轮询可读），状态迁移才落盘
         },
@@ -328,12 +344,12 @@ export class QuickcutService {
       rec.percent = 100;
       rec.state = 'done';
       this.save();
-      this.log(`[quickcuts] ${rec.id}: done → ${r.out}`);
+      this.recLog(rec, `done → ${r.out}`);
     } catch (e) {
       rec.error = (e as Error).message;
       rec.state = 'failed';
       this.save();
-      this.log(`[quickcuts] ${rec.id}: FAILED ${rec.error}`);
+      this.recLog(rec, `FAILED ${rec.error}`);
     }
   }
 }

@@ -222,3 +222,18 @@ test('POST /jobs/:id/bias：转发 realign，错误 400', async () => {
   assert.equal(queue.get(job.id)!.params.bias_seconds, -2.5);
   assert.equal((await request(app, '/jobs/ghost/bias', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bias_seconds: 1 }) })).status, 400);
 });
+
+test('GET /quickcuts/:id/log：有记录回日志文本；无记录 404', async () => {
+  const home = process.env.ACTPIPE_HOME!;
+  // createApp 内部构造 QuickcutService 时读 quickcuts.json：先落一条 done 记录 + 日志文件
+  fs.writeFileSync(path.join(home, 'quickcuts.json'), JSON.stringify([
+    { id: 'qc1', job_id: 'job-1', cuts: null, use_llm: true, llm_used: false, state: 'done', percent: 100, plan: null, out: '/x.mp4', error: null, created_at: '2026-09-18T00:00:00.000Z' },
+  ]));
+  fs.mkdirSync(path.join(home, 'quickcuts'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'quickcuts', 'qc1.log'), '[10:00:00] L0 兜底出 4 幕\n');
+  const { app } = mkApp();
+  const ok = await request(app, '/quickcuts/qc1/log');
+  assert.equal(ok.status, 200);
+  assert.match(await ok.text(), /L0 兜底出 4 幕/);
+  assert.equal((await request(app, '/quickcuts/ghost/log')).status, 404);
+});

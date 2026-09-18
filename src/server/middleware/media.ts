@@ -15,11 +15,12 @@ import { buildSkin, buildSkinHtml } from '../../modules/skin-build.ts';
 import { generateFilmstrip, thumbPath } from '../../modules/thumb.ts';
 import * as strava from '../../modules/strava.ts';
 import type { Job, SegmentArtifacts } from '../../types.ts';
+import { QuickcutService } from '../quickcuts.ts';
 import type { AppContext } from '../app.ts';
 
 // 媒体/元信息路由：时间轴对齐数据源、Range 视频流、预览截图、日志、LUT/皮肤清单、全局状态、Strava。
 // 这些端点保持普通 Express handler（JSON 直写或流式），不扭成 service。
-export function createMediaRouter({ queue, configRef, inbox, refs }: AppContext) {
+export function createMediaRouter({ queue, configRef, inbox, refs, quickcuts = null }: AppContext) {
   const router = Router();
 
   // 收集任务的段产物（单段任务伪装成一段）
@@ -76,6 +77,18 @@ export function createMediaRouter({ queue, configRef, inbox, refs }: AppContext)
     const job = queue.get(req.params.id);
     if (!job) return res.status(404).type('text').send('not found');
     const file = path.join(job.dir, 'log.txt');
+    return res.type('text').send(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '(no log yet)');
+  });
+
+  // 快剪全程日志（L0/L1/渲染）：与 jobs 日志同套路，文件在 <home>/quickcuts/<id>.log
+  router.get('/quickcuts/:id/log', async (req: Request, res: Response) => {
+    if (!quickcuts) return res.status(503).type('text').send('quickcuts 未启用');
+    try {
+      await quickcuts.get(req.params.id);
+    } catch {
+      return res.status(404).type('text').send('not found');
+    }
+    const file = QuickcutService.logFileFor(req.params.id);
     return res.type('text').send(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '(no log yet)');
   });
 

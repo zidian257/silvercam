@@ -7,6 +7,7 @@ import {
   loadSkillInstructions,
   validateCuts,
   refineActsWithAgent,
+  formatAgentEvent,
 } from '../../src/server/quickcut-agent.ts';
 import type { QuickcutPlan } from '../../src/modules/quickcut.ts';
 
@@ -167,4 +168,29 @@ test('ffmpeg 工具：ffprobe 探测时长；非法命令不回退任务（exit 
   } finally {
     fs.rmSync(workdir, { recursive: true, force: true });
   }
+});
+
+// ---------- formatAgentEvent ----------
+
+test('formatAgentEvent: 工具调用与助手文本 → 日志行；其余事件 null', () => {
+  assert.equal(
+    formatAgentEvent({ type: 'tool_execution_start', toolName: 'ffmpeg', args: { args: ['-ss', '3', '-i', 'v.mp4', 'f.jpg'] } }),
+    '→ ffmpeg -ss 3 -i v.mp4 f.jpg',
+  );
+  const commit = formatAgentEvent({ type: 'tool_execution_start', toolName: 'commit_cuts', args: { cuts: [{ start: 1, end: 2, label: '出发' }] } });
+  assert.match(commit!, /→ commit_cuts /);
+  assert.match(commit!, /出发/);
+  // 助手文本：block 数组只取 text，忽略 image
+  assert.equal(
+    formatAgentEvent({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: '先看菜单' }, { type: 'image', data: 'x' }] } }),
+    'agent: 先看菜单',
+  );
+  // 超长 ffmpeg 命令截断到 300
+  const long = formatAgentEvent({ type: 'tool_execution_start', toolName: 'ffmpeg', args: { args: ['a'.repeat(500)] } });
+  assert.ok(long!.length <= 300, `length=${long!.length}`);
+  // 不记的：非助手消息 / 空文本 / 其余事件类型
+  assert.equal(formatAgentEvent({ type: 'message_end', message: { role: 'user', content: 'hi' } }), null);
+  assert.equal(formatAgentEvent({ type: 'message_end', message: { role: 'assistant', content: [] } }), null);
+  assert.equal(formatAgentEvent({ type: 'turn_start' }), null);
+  assert.equal(formatAgentEvent({ type: 'message_update', message: {} }), null);
 });

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { fmtAgo } from '../format.ts';
+  import { api } from '../api.ts';
   import {
     isActiveState,
     stateText,
@@ -30,6 +31,30 @@
   let mine = $derived(recordsForJob(records, jobId));
   let latest = $derived(mine[0] ?? null);
   let history = $derived(mine.slice(1));
+
+  // 日志查看：toggle 拉取 /quickcuts/:id/log；进行态 2s 轮询跟进（L1 agent 抽帧会跑几分钟）
+  let logOpen = $state(false);
+  let logText = $state('');
+  let logErr = $state('');
+
+  async function loadLog(id: string) {
+    try {
+      const r = await api(`/quickcuts/${id}/log`);
+      logText = await r.text();
+      logErr = '';
+    } catch (e) {
+      logErr = (e as Error).message;
+    }
+  }
+
+  $effect(() => {
+    const rec = latest;
+    if (!logOpen || !rec) return;
+    loadLog(rec.id);
+    if (!isActiveState(rec.state)) return;
+    const timer = setInterval(() => loadLog(rec.id), 2000);
+    return () => clearInterval(timer);
+  });
 
   async function submit() {
     submitting = true;
@@ -102,6 +127,13 @@
         <span class="err">{latest.error ?? '未知错误'}</span>
       </div>
     {/if}
+    <div class="logrow">
+      <button class="btn sm" onclick={() => (logOpen = !logOpen)}>{logOpen ? '收起日志' : '日志'}</button>
+    </div>
+    {#if logOpen}
+      {#if logErr}<div class="err">{logErr}</div>{/if}
+      <pre class="log">{logText || '（暂无日志）'}</pre>
+    {/if}
   {:else}
     <div class="hint">还没有快剪记录</div>
   {/if}
@@ -158,6 +190,23 @@
   .acts tr.dropped .arange { color: var(--text-3); }
   .total { margin-top: 8px; font-size: 11px; color: var(--text-3); }
   .hint { margin-top: 8px; font-size: 12px; color: var(--text-3); }
+  .logrow { margin-top: 10px; }
+  .btn.sm { font-size: 12px; padding: 3px 10px; }
+  .log {
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-2);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 260px;
+    overflow: auto;
+  }
   .hist { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
   .hl { font-size: 11px; color: var(--text-3); letter-spacing: .08em; }
 </style>

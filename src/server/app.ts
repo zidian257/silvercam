@@ -31,6 +31,7 @@ export interface AppContext {
   configRef: ConfigRef;
   inbox: Inbox | null;
   refs: AppRefs;
+  quickcuts?: QuickcutService | null; // media 路由的 /quickcuts/:id/log 用
 }
 
 // Feathers v5 custom method 在 REST 上走 x-service-method 头、签名 (data, params)；
@@ -82,7 +83,9 @@ export function createApp({ queue, configRef, inbox = null, refs = {} }: { queue
 
   app.use('jobs', new JobsService({ queue }), { methods: ['find', 'get', 'create', 'fit', 'offset', 'bias'], events: ['progress'] });
   // 快剪：对已出片任务剪 ~30s 短片；轻任务走服务内部串行通道，不挤主队列
-  app.use('quickcuts', new QuickcutService({ queue, configRef }), { methods: ['find', 'get', 'create', 'analyze', 'llm_status', 'llm_test'] });
+  const quickcuts = new QuickcutService({ queue, configRef });
+  ctx.quickcuts = quickcuts;
+  app.use('quickcuts', quickcuts, { methods: ['find', 'get', 'create', 'analyze', 'llm_status', 'llm_test'] });
   app.use('api/inbox', new InboxService(ctx), { methods: ['find', 'remove', 'commit', 'align', 'reopen'] });
   app.use('api/fits', new FitsService({ configRef }), { methods: ['find', 'create'] });
   app.use('config', new ConfigService(ctx), { methods: ['find', 'update'] });
