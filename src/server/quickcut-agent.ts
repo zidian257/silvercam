@@ -26,7 +26,7 @@ const FFMPEG_TIMEOUT_MS = 120_000;
 const MAX_RETURN_IMAGES = 12;
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const STDIO_TAIL = 2000;
-// 剪辑点护栏：幕数与总时长的 sanity 上限（时长本身不设死，30s 是 skill 里的目标不是硬约束）
+// 剪辑点护栏：幕数与总时长的 sanity 上限（时长本身不设死——skill 里的目标是默认 ~30s、弹性到 2 分钟内）
 const MAX_CUTS = 12;
 const MAX_TOTAL_S = 180;
 
@@ -79,7 +79,7 @@ export function validateCuts(cuts: QuickcutCut[], videoDurationS: number): Requi
     prevEnd = end;
     out.push({ start: Math.round(start * 100) / 100, end: Math.round(end * 100) / 100, label: c.label ?? `片段${i + 1}` });
   });
-  if (total > MAX_TOTAL_S) throw new Error(`总时长 ${total.toFixed(1)}s 超上限（${MAX_TOTAL_S}s）——快剪是短片，回到 ~30s 的目标`);
+  if (total > MAX_TOTAL_S) throw new Error(`总时长 ${total.toFixed(1)}s 超上限（${MAX_TOTAL_S}s）——快剪是短片，回到 2 分钟以内的目标`);
   return out;
 }
 
@@ -94,7 +94,8 @@ function buildFfmpegTool(video: string, workdir: string, log: (m: string) => voi
       `在隔离工作目录里运行 ffmpeg 或 ffprobe（args 数组，无 shell）。` +
       `输入视频用绝对路径 ${video}；输出文件一律写相对文件名（落在工作目录）。` +
       `运行结束后自动回传：stdio 尾部 + 工作目录里新产生的图片（jpg/png，最多 ${MAX_RETURN_IMAGES} 张）。` +
-      `抽帧示例：{bin:'ffmpeg', args:['-hide_banner','-loglevel','error','-y','-ss','141.6','-i','${video}','-frames:v','1','-vf','scale=960:-2','-q:v','3','f_141.jpg']}`,
+      `抽帧示例：{bin:'ffmpeg', args:['-hide_banner','-loglevel','error','-y','-ss','141.6','-i','${video}','-frames:v','1','-vf','scale=960:-2','-q:v','3','f_141.jpg']}；` +
+      `一次多帧用 %d 命名：['-ss','10','-i','${video}','-frames:v','4','-vf','scale=960:-2','f_%d.jpg']（输出名不带 %d 会报错）`,
     parameters: Type.Object({
       bin: Type.Optional(Type.Union([Type.Literal('ffmpeg'), Type.Literal('ffprobe')], { description: '默认 ffmpeg' })),
       args: Type.Array(Type.String(), { description: '命令行参数数组' }),
@@ -195,8 +196,23 @@ ${eventsDigest(events)}
 
 # 兜底粗剪计划（可作 baseline 改进）
 ${planDigest(plan)}
-
+${hardStepsDigest(events)}
 按 skill 流程开始：先圈候选，再逐幕抽帧验证（不满意就调窗口再看），交叉校验 overlay 读数与事件数值，最后 commit_cuts 提交。`;
+}
+
+// 把 skill 的两步硬流程换算成本片的具体数字——小模型跟得住具体秒数，跟不住抽象原则
+function hardStepsDigest(events: QuickcutEvent[]): string {
+  const lines: string[] = [];
+  const probes = (from: number, to: number) => [0.1, 0.3, 0.6, 0.9].map((r) => Math.round(from + (to - from) * r)).join('/');
+  for (const e of events) {
+    if ((e.type === 'head' || e.type === 'tail') && e.fromVideoS != null && e.toVideoS != null && e.toVideoS - e.fromVideoS > 20) {
+      lines.push(`- ${e.type === 'head' ? '片头' : '片尾'}区间 ${e.fromVideoS.toFixed(0)}–${e.toVideoS.toFixed(0)}s：先在 ${probes(e.fromVideoS, e.toVideoS)}s 四处抽帧探索，再定${e.type === 'head' ? '开头' : '收尾'}窗口`);
+    }
+    if (e.type === 'pause' && e.audio?.talk && e.audio.fromS != null && e.audio.toS != null) {
+      lines.push(`- 停顿有人声（${e.audio.fromS.toFixed(0)}–${e.audio.toS.toFixed(0)}s）：在区间内抽帧，取一处 ≤6s 的对话 beat（画面实在不可用才放弃，提交时写明原因）`);
+    }
+  }
+  return lines.length ? `\n# 本片硬步骤（skill「两步硬流程」逐条落实）\n${lines.join('\n')}\n` : '';
 }
 
 // ---------- 事件日志 ----------

@@ -10,7 +10,7 @@
 
 import { spawn } from 'node:child_process';
 import path from 'node:path';
-import { uniquePath } from '../lib/util.ts';
+import { run, uniquePath } from '../lib/util.ts';
 
 export interface QuickcutSegment {
   videoStartS: number;   // 该段在 merged 视频里的起始秒
@@ -52,6 +52,18 @@ export interface QuickcutEvent {
   windowS: number;       // 建议窗口（秒）
   score: number;
   desc: string;          // 人话描述（含数值，供 agent/日志直接读）
+  // 停顿事件专有：停顿区间的视频秒边界（供音频扫描定位；null = 端点不在视频覆盖内）
+  fromVideoS?: number | null;
+  toVideoS?: number | null;
+  audio?: PauseAudioInfo; // annotatePauseAudio 附的人声标记
+}
+
+// 停顿窗的音频指纹：响亮切片呈持续的人声形态才算 talk（一声过路噪声不算）
+export interface PauseAudioInfo {
+  talk: boolean;
+  fromS: number | null; // 人声区起点（视频秒）
+  toS: number | null;   // 人声区终点
+  peakDb: number | null;
 }
 
 export type EventType =
@@ -194,10 +206,10 @@ export function detectEvents(
     const firstDataT = segments.length ? fitToVideo(segments, t0) : null;
     const lastDataT = segments.length ? fitToVideo(segments, tEnd) : null;
     if (firstDataT != null && firstDataT > 1) {
-      out.push({ type: 'head', fitS: null, videoS: 0, windowS: 4, score: 50, desc: `片头（数据出现前 ${firstDataT.toFixed(0)}s）` });
+      out.push({ type: 'head', fitS: null, videoS: 0, windowS: 4, score: 50, desc: `片头（数据出现前 ${firstDataT.toFixed(0)}s）`, fromVideoS: 0, toVideoS: firstDataT });
     }
     if (lastDataT != null && videoDurationS - lastDataT > 1) {
-      out.push({ type: 'tail', fitS: null, videoS: videoDurationS, windowS: 4, score: 50, desc: `片尾（数据结束后还有 ${(videoDurationS - lastDataT).toFixed(0)}s）` });
+      out.push({ type: 'tail', fitS: null, videoS: videoDurationS, windowS: 4, score: 50, desc: `片尾（数据结束后还有 ${(videoDurationS - lastDataT).toFixed(0)}s）`, fromVideoS: lastDataT, toVideoS: videoDurationS });
     }
   }
 
@@ -220,7 +232,11 @@ export function detectEvents(
   const longestPause = pauses[0]?.durS ?? 1;
   for (const p of pauses) {
     const mid = s[Math.floor((p.from + p.to) / 2)].tS;
-    out.push(ev({ type: 'pause', fitS: mid, windowS: 4, score: Math.round((p.durS / longestPause) * 100), desc: `停顿 ${p.durS.toFixed(0)}s` }));
+    out.push({
+      ...ev({ type: 'pause', fitS: mid, windowS: 4, score: Math.round((p.durS / longestPause) * 100), desc: `停顿 ${p.durS.toFixed(0)}s` }),
+      fromVideoS: toVideo(s[p.from].tS),
+      toVideoS: toVideo(s[p.to].tS),
+    });
   }
 
   // 最长巡航（连续移动 ≥3 m/s 的最长一段，取中点）
@@ -307,6 +323,74 @@ export function detectEvents(
     const kb = b.videoS ?? (b.fitS != null ? Number.MAX_SAFE_INTEGER / 2 + b.fitS : 0);
     return ka - kb;
   });
+}
+
+// ---------- 停顿窗音频扫描（人声标记） ----------
+
+const AUDIO_BUCKET_S = 5; // 聚合桶宽（秒）
+const AUDIO_TALK_DB = -25; // 响度阈值：DJI 风噪抑制下骑行基线远低于此，近场人声显著高于此
+const AUDIO_TALK_MIN_BUCKETS = 3; // 至少 ~15s 持续响亮才算「有人声」，过路噪声/一声快门不触发
+const AUDIO_SCAN_CAP_S = 240; // 单个停顿最多扫的时长（音频解码 ~5x 实时，长停顿兜个上限）
+
+// 单次 ffmpeg astats 全窗扫描 → 5s 桶能量均值（dB 转线性能量求均值再转回）
+export async function scanPauseAudio(video: string, fromS: number, toS: number): Promise<PauseAudioInfo> {
+  const durS = Math.max(1, Math.min(toS - fromS, AUDIO_SCAN_CAP_S));
+  const r = await run('ffmpeg', [
+    '-hide_banner', '-ss', fromS.toFixed(2), '-t', durS.toFixed(2), '-i', video,
+    '-vn', // 只解音频：不选视频流（否则 4K 白解码，240s 窗从 ~90s 降到 ~2s）
+    '-af', 'astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-',
+    '-f', 'null', '-',
+  ]);
+  if (r.code !== 0) throw new Error(`ffmpeg astats 退出码 ${r.code}`);
+
+  // 输出是 frame/pts_time 行与 RMS_level 行交替：配对后按 5s 桶聚合
+  const buckets = new Map<number, { sum: number; n: number }>();
+  let pts: number | null = null;
+  for (const line of r.stdout.split('\n')) {
+    const pm = /pts_time:([\d.]+)/.exec(line);
+    if (pm) { pts = Number(pm[1]); continue; }
+    const rm = /RMS_level=(-?[\d.eE+-]+)/.exec(line);
+    if (!rm || pts == null) continue;
+    const db = Number(rm[1]);
+    if (!Number.isFinite(db) || db <= -90) continue; // -inf/静音桶不进能量均值
+    const i = Math.floor(pts / AUDIO_BUCKET_S);
+    const b = buckets.get(i) ?? { sum: 0, n: 0 };
+    b.sum += 10 ** (db / 10); // 能量线性叠加
+    b.n++;
+    buckets.set(i, b);
+  }
+  const loud: { i: number; db: number }[] = [];
+  for (const [i, b] of [...buckets.entries()].sort((a, z) => a[0] - z[0])) {
+    if (!b.n) continue;
+    const db = 10 * Math.log10(b.sum / b.n);
+    if (db > AUDIO_TALK_DB) loud.push({ i, db });
+  }
+  if (loud.length < AUDIO_TALK_MIN_BUCKETS) {
+    return { talk: false, fromS: null, toS: null, peakDb: loud.length ? Math.max(...loud.map((x) => x.db)) : null };
+  }
+  return {
+    talk: true,
+    fromS: fromS + loud[0].i * AUDIO_BUCKET_S,
+    toS: Math.min(fromS + (loud[loud.length - 1].i + 1) * AUDIO_BUCKET_S, fromS + durS),
+    peakDb: Math.max(...loud.map((x) => x.db)),
+  };
+}
+
+// 给停顿事件附人声标记（desc 追加人声区间/安静）。扫描失败不挡流程——事件退化为普通停顿。
+// 停顿间并发扫描；只有边界都在视频覆盖内、且时长 ≥15s 的停顿值得扫
+export async function annotatePauseAudio(events: QuickcutEvent[], video: string): Promise<QuickcutEvent[]> {
+  await Promise.all(events.map(async (e) => {
+    if (e.type !== 'pause' || e.fromVideoS == null || e.toVideoS == null) return;
+    if (e.toVideoS - e.fromVideoS < 15) return;
+    try {
+      const a = await scanPauseAudio(video, e.fromVideoS, e.toVideoS);
+      e.audio = a;
+      e.desc += a.talk && a.fromS != null && a.toS != null
+        ? `（${a.fromS.toFixed(0)}–${a.toS.toFixed(0)}s 有人声）`
+        : '（安静）';
+    } catch { /* 标记失败不挡流程 */ }
+  }));
+  return events;
 }
 
 // ---------- 兜底组装：事件菜单 → ~30s 粗剪 ----------

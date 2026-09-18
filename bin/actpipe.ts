@@ -78,7 +78,7 @@ async function api(method: string, p: string, body?: unknown): Promise<Response>
         ...(cliToken ? { 'X-Actpipe-Token': cliToken } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(120000), // analyze 含停顿音频扫描，可能 ~60s
     });
   } catch {
     console.error('server 未运行。启动方式：actpipe watch（前台调试）或 pm2 start（常驻）');

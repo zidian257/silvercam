@@ -16,7 +16,7 @@ import path from 'node:path';
 import { BadRequest, NotFound } from '@feathersjs/errors';
 import { paths, ensureDirs } from '../lib/paths.ts';
 import { readJson, run, writeJsonAtomic } from '../lib/util.ts';
-import { assembleHeuristic, detectEvents, normalizeSamples, planFromCuts, quickcutOutputPathFor, renderQuickcut } from '../modules/quickcut.ts';
+import { annotatePauseAudio, assembleHeuristic, detectEvents, normalizeSamples, planFromCuts, quickcutOutputPathFor, renderQuickcut } from '../modules/quickcut.ts';
 import type { QuickcutPlan, QuickcutSegment } from '../modules/quickcut.ts';
 import { resolveLlm, complete } from './llm.ts';
 import type { Job, SegmentArtifacts } from '../types.ts';
@@ -217,7 +217,7 @@ export class QuickcutService {
       video,
       videoDurationS,
       segments,
-      events: detectEvents(samples, { segments, videoDurationS }),
+      events: await annotatePauseAudio(detectEvents(samples, { segments, videoDurationS }), video),
       plan: assembleHeuristic({ samples, segments, videoDurationS }),
     };
   }
@@ -314,7 +314,7 @@ export class QuickcutService {
             if (typeof mod?.refineActsWithAgent !== 'function') {
               this.recLog(rec, 'L1 skill runner 未就绪，沿用 L0 plan');
             } else {
-              const events = detectEvents(samples, { segments, videoDurationS });
+              const events = await annotatePauseAudio(detectEvents(samples, { segments, videoDurationS }), video);
               rec.plan = await mod.refineActsWithAgent({ video, videoDurationS, events, plan: rec.plan, llm, log: (m: string) => this.recLog(rec, m) });
               rec.llm_used = true;
               this.recLog(rec, `L1 抛光完成（${llm.describe}）`);

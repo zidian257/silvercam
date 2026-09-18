@@ -122,6 +122,29 @@ test('refineActsWithAgent: agent 抛异常 → 回退 L0', async () => {
   assert.equal(plan, L0_PLAN);
 });
 
+test('refineActsWithAgent: user prompt 带本片硬步骤（长片头探测点 + 人声停顿 beat）', async () => {
+  let userPrompt = '';
+  const events = [
+    { type: 'head', fitS: null, videoS: 0, windowS: 4, score: 50, desc: '片头（数据出现前 134s）', fromVideoS: 0, toVideoS: 134.1 },
+    { type: 'pause', fitS: 1435, videoS: 1567.7, windowS: 4, score: 100, desc: '停顿 266s（1545–1675s 有人声）', fromVideoS: 1434.7, toVideoS: 1700.7, audio: { talk: true, fromS: 1544.7, toS: 1674.7, peakDb: -13.1 } },
+    { type: 'pause', fitS: 2161, videoS: 2293.7, windowS: 4, score: 11, desc: '停顿 29s（安静）', fromVideoS: 2290, toVideoS: 2319, audio: { talk: false, fromS: null, toS: null, peakDb: null } },
+  ];
+  await refineActsWithAgent({
+    video: VIDEO, videoDurationS: 15, events: events as any, plan: L0_PLAN,
+    llm: fakeLlm(),
+    agentFactory: (_s, tools) => ({
+      prompt: async (p: string) => {
+        userPrompt = p;
+        await tools.find((t: any) => t.name === 'commit_cuts').execute('t', { cuts: [{ start: 1, end: 2 }] });
+      },
+    }),
+  });
+  assert.match(userPrompt, /本片硬步骤/);
+  assert.match(userPrompt, /片头区间 0–134s：先在 13\/40\/80\/121s/);
+  assert.match(userPrompt, /停顿有人声（1545–1675s）：在区间内抽帧，取一处 ≤6s/);
+  assert.ok(!userPrompt.includes('2290–2319'), '安静停顿不进硬步骤');
+});
+
 // ---------- ffmpeg 工具 ----------
 
 const mkFfmpegTool = async (workdir: string) => {

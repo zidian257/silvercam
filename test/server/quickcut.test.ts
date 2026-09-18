@@ -5,9 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   normalizeSamples, fitToVideo, detectEvents, assembleHeuristic, planFromCuts,
-  renderQuickcut, quickcutOutputPathFor,
+  renderQuickcut, quickcutOutputPathFor, scanPauseAudio, annotatePauseAudio,
 } from '../../src/modules/quickcut.ts';
-import type { NormalizedSample } from '../../src/modules/quickcut.ts';
+import type { NormalizedSample, QuickcutEvent } from '../../src/modules/quickcut.ts';
 
 // 真实骑行的归一化样本（fixtures/quickcut-samples.json，已剔除位置与绝对时间）
 const FIXTURE = JSON.parse(fs.readFileSync(path.resolve('fixtures/quickcut-samples.json'), 'utf8'));
@@ -62,11 +62,15 @@ test('detectEvents: 真实骑行出全事件菜单，锚点命中人工基准', 
   // 通用事件
   assert.equal(byType('head')[0]?.videoS, 0);
   assert.match(byType('head')[0]?.desc ?? '', /134s/); // 开表前 134s 车内段
+  assert.ok(Math.abs((byType('head')[0]?.toVideoS ?? 0) - 134.08) < 0.5, `片头区间终点 ${byType('head')[0]?.toVideoS}`);
+  const tl = byType('tail')[0];
+  assert.ok(tl, '片尾');
+  assert.match(tl.desc, /83s/);
+  assert.ok(tl.fromVideoS != null && tl.fromVideoS > 2370 && tl.fromVideoS < 2385, `片尾起点 ${tl.fromVideoS}`);
+  assert.equal(tl.toVideoS, VIDEO_DURATION);
   const fm = byType('first_move')[0];
   assert.ok(fm.videoS! > 138 && fm.videoS! < 148, `首次移动 ${fm.videoS}`); // ~141s 上路
   assert.ok(byType('cruise')[0], '最长巡航');
-  assert.ok(byType('tail')[0], '片尾');
-  assert.match(byType('tail')[0]?.desc ?? '', /83s/);
 
   // 条件事件（该素材有功率/心率/海拔，无 GPS）
   const pp = byType('power_peak')[0];
@@ -84,6 +88,11 @@ test('detectEvents: 真实骑行出全事件菜单，锚点命中人工基准', 
   const pauses = byType('pause');
   assert.ok(pauses.length >= 1 && pauses.length <= 5, `停顿数 ${pauses.length}`);
   assert.match(pauses[0].desc, /266s/); // 山顶停车是最长停顿
+  // 停顿带视频秒边界（音频扫描定位用）：266s 山顶停顿映射到视频 ~[1435, 1701]
+  const p0 = pauses[0];
+  assert.ok(p0.fromVideoS != null && p0.toVideoS != null, '停顿必须有视频秒边界');
+  assert.ok(p0.fromVideoS! > 1425 && p0.fromVideoS! < 1445, `from ${p0.fromVideoS}`);
+  assert.ok(p0.toVideoS! > 1690 && p0.toVideoS! < 1710, `to ${p0.toVideoS}`);
   assert.equal(byType('turnaround').length, 0); // fixture 无 position，不出折返点
 
   // 全部事件都落在视频覆盖内（该素材两段覆盖了整个 FIT）
@@ -216,4 +225,37 @@ test('renderQuickcut: 两幕各 2s 合成 ≈4s 成片', { timeout: 120000 }, as
 test('quickcutOutputPathFor: 同目录、去 _dash、重名自增', () => {
   const p = quickcutOutputPathFor('/tmp/movies/2026-09-13/DJI_x_merged_dash.mp4');
   assert.match(p, /\/tmp\/movies\/2026-09-13\/DJI_x_merged_kuaijian\.mp4$/);
+});
+
+// ---------- 停顿音频扫描 ----------
+
+const AUDIO_VIDEO = path.resolve('fixtures/out/DJI_20260906100100.MP4'); // 15s，含 AAC 音轨
+
+test('scanPauseAudio: 真实 ffmpeg astats 扫描返回合法结构', { timeout: 60000 }, async () => {
+  const a = await scanPauseAudio(AUDIO_VIDEO, 0, 15);
+  assert.equal(typeof a.talk, 'boolean');
+  if (a.talk) {
+    assert.ok(a.fromS != null && a.toS != null && a.toS > a.fromS, `人声区 ${a.fromS}–${a.toS}`);
+    assert.ok(a.peakDb != null && a.peakDb > -25, `峰值 ${a.peakDb}`);
+  } else {
+    assert.equal(a.fromS, null);
+    assert.equal(a.toS, null);
+  }
+});
+
+test('annotatePauseAudio: 可扫的停顿附标记与 desc；不可扫的原样不动', { timeout: 60000 }, async () => {
+  const events: QuickcutEvent[] = [
+    { type: 'pause', fitS: 7, videoS: 7, windowS: 4, score: 100, desc: '停顿 15s', fromVideoS: 0, toVideoS: 15 },
+    { type: 'pause', fitS: 30, videoS: null, windowS: 4, score: 80, desc: '停顿 40s', fromVideoS: null, toVideoS: null }, // 不在覆盖内
+    { type: 'pause', fitS: 50, videoS: 5, windowS: 4, score: 60, desc: '停顿 10s', fromVideoS: 0, toVideoS: 10 },        // <15s 不值得扫
+    { type: 'speed_peak', fitS: 1, videoS: 1, windowS: 8, score: 90, desc: '极速 40km/h' },
+  ];
+  await annotatePauseAudio(events, AUDIO_VIDEO);
+  assert.ok(events[0].audio, '可扫停顿应有 audio 标记');
+  assert.match(events[0].desc, /停顿 15s（.*(有人声|安静)）/, `desc=${events[0].desc}`);
+  assert.equal(events[1].audio, undefined);
+  assert.equal(events[1].desc, '停顿 40s');
+  assert.equal(events[2].audio, undefined);
+  assert.equal(events[2].desc, '停顿 10s');
+  assert.equal(events[3].desc, '极速 40km/h');
 });
