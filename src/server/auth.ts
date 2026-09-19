@@ -90,8 +90,8 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password: document.getElementById('p').value }) });
   if (r.ok) {
-    const next = new URLSearchParams(location.search).get('next') ?? '/inbox';
-    location.href = next.startsWith('/') ? next : '/inbox'; // 防 open-redirect
+    const next = new URLSearchParams(location.search).get('next') ?? '/dash';
+    location.href = next.startsWith('/') ? next : '/dash'; // 防 open-redirect
   } else {
     document.getElementById('e').textContent = '密码错误';
     document.getElementById('p').select();

@@ -10,7 +10,7 @@ const ASSET_MIME: Record<string, string> = {
   '.woff': 'font/woff', '.woff2': 'font/woff2', '.json': 'application/json',
 };
 
-// 页面路由：健康检查 + 三个页面（Svelte 构建产物）+ 皮肤静态资源
+// 页面路由：/ 重定向到 dash + 三个页面（Svelte 构建产物）+ 皮肤静态资源（状态接口在 /api/status）
 const WEB_DIST = path.join(REPO_ROOT, 'web', 'dist');
 const servePage = (name: string) => (req: Request, res: Response) => {
   const file = path.join(WEB_DIST, 'pages', name, 'index.html');
@@ -21,7 +21,7 @@ const servePage = (name: string) => (req: Request, res: Response) => {
 export function createPagesRouter() {
   const router = Router();
 
-  router.get('/', (req: Request, res: Response) => res.json({ name: 'actpipe', version: '0.1.0', uptime_s: process.uptime() }));
+  router.get('/', (req: Request, res: Response) => res.redirect('/dash'));
 
   // studio = 编辑预览工作台（对齐页）：看视频、LUT/皮肤实时预览、定格校准时间轴
   router.get('/studio', servePage('studio'));
