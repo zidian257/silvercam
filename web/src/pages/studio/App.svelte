@@ -477,7 +477,7 @@
   </div>
 
   <div class="caption">{caption}</div>
-  <div class="hint" title="播放找到出发/起步那一刻（开表会有 beep 声）→ 暂停 → 「定格 FIT 起点」→ 逐帧微调（定格后带着 FIT 起点一起走）。进度条蓝色区段 = 有 FIT 数据；预览为原片实时套 LUT 的近似效果，成片以 ffmpeg 渲染为准。">播放找到出发/起步那一刻（开表会有 beep 声）→ 暂停 → 「定格 FIT 起点」→ 逐帧微调（定格后带着 FIT 起点一起走）。进度条蓝色区段 = 有 FIT 数据；预览为原片实时套 LUT 的近似效果，成片以 ffmpeg 渲染为准。</div>
+  <div class="hint" title="播放找到出发/起步那一刻（开表会有 beep 声）→ 暂停 → 「定格 FIT 起点」→ 逐帧微调（定格后带着 FIT 起点一起走）。进度条高亮区段 = 有 FIT 数据；预览为原片实时套 LUT 的近似效果，成片以 ffmpeg 渲染为准。">播放找到出发/起步那一刻（开表会有 beep 声）→ 暂停 → 「定格 FIT 起点」→ 逐帧微调（定格后带着 FIT 起点一起走）。进度条高亮区段 = 有 FIT 数据；预览为原片实时套 LUT 的近似效果，成片以 ffmpeg 渲染为准。</div>
 
   {#if save.visible}
     <div class="saverow">

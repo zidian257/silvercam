@@ -55,40 +55,40 @@ playwright/Chromium（皮肤帧渲染）、ffmpeg/ffprobe（视频）、@garmin/
 
 ```
 actpipe/
-├── bin/actpipe.js                 # CLI（不变）
+├── bin/actpipe.ts                 # CLI（不变）
 ├── src/
 │   ├── server/
-│   │   ├── index.js               # 启动装配：createApp → app.listen → upgrade 分发（基本不变）
-│   │   ├── app.js                 # Feathers/Express 装配：鉴权中间件 → services + routers
-│   │   ├── auth.js                # 密码登录 + 签名 session cookie + WS 鉴权（Express 签名）
+│   │   ├── index.ts               # 启动装配：createApp → app.listen → upgrade 分发（基本不变）
+│   │   ├── app.ts                 # Feathers/Express 装配：鉴权中间件 → services + routers
+│   │   ├── auth.ts                # 密码登录 + HMAC 签名 cookie + WS 鉴权
 │   │   ├── services/              # 四个领域资源 service 化（hooks + realtime 红利）
-│   │   │   ├── jobs.js            # /jobs：find/get/create + custom methods fit/offset/bias
-│   │   │   ├── inbox.js           # /api/inbox：find/remove + custom methods commit/align/reopen
-│   │   │   ├── fits.js            # /api/fits：find/create（上传走 express.raw 原始字节）
-│   │   │   └── config.js          # /config 单例：GET→find，PUT→update
+│   │   │   ├── jobs.ts            # /jobs：find/get/create + custom methods fit/offset/bias
+│   │   │   ├── inbox.ts           # /api/inbox：find/remove + custom methods commit/align/reopen
+│   │   │   ├── fits.ts            # /api/fits：find/create（上传走 express.raw 原始字节）
+│   │   │   └── config.ts          # /config 单例：GET→find，PUT→update
 │   │   ├── middleware/            # 其余端点保持普通 Express router（JSON 直写/流式，不强扭成 service）
-│   │   │   ├── pages.js           # 页面路由（/ /inbox /dash /studio + /app /skin-build 静态）
-│   │   │   └── media.js           # /api/align/* + /preview + /inbox/:id/thumb.jpg + /jobs/:id/align|log
+│   │   │   ├── pages.ts           # 页面路由（/ /inbox /fits /dash /studio + /app /skin-build 静态）
+│   │   │   └── media.ts           # /api/align/* + /preview + /inbox/:id/thumb.jpg + /jobs/:id/align|log
 │   │   │                          #   + /luts /skins /api/status /api/strava/*（含 Range 视频流）
-│   │   ├── realtime.js            # queue event 分发：/jobs/:id/progress 原生 WS（协议不变）
+│   │   ├── realtime.ts            # queue event 分发：/jobs/:id/progress 原生 WS（协议不变）
 │   │   │                          #   + jobs service emit('progress') → socket.io channel 广播
-│   │   ├── queue.js  inbox.js     # 领域服务（逻辑不变，补测试）
-│   ├── modules/skin-build.js      # 皮肤编译层：esbuild+esbuild-svelte 按需编译 Skin.svelte（内容哈希 buildId）
+│   │   ├── queue.ts  inbox.ts     # 领域服务（逻辑不变，补测试）
+│   ├── modules/skin-build.ts      # 皮肤编译层：esbuild+esbuild-svelte 按需编译 Skin.svelte（内容哈希 buildId）
 │   ├── lib/  modules/             # 纯工具与流水线模块（不变，补测试）
 ├── web/
 │   ├── src/                       # Svelte 5 源码
-│   │   ├── pages/dash|inbox|studio|fits/{index.html, main.js, App.svelte}
-│   │   ├── lib/api.js             # fetch 封装（401 跳登录）
-│   │   ├── lib/{format,dash,inbox,studio,fits-model,track,lutgl}.js   # 纯逻辑（vitest 直测）
+│   │   ├── pages/dash|inbox|studio|fits/{index.html, main.ts, App.svelte}
+│   │   ├── lib/api.ts             # fetch 封装（401 跳登录）
+│   │   ├── lib/{format,dash,inbox,studio,fits-model,track,lutgl,quickcut,llm}.ts   # 纯逻辑（vitest 直测）
 │   │   └── lib/components/        # StatCards/JobsTable/PendingGroup/SeekBar/Thumb/FitTrack 等
 │   └── dist/                      # vite 构建产物（server /app/* 静态伺服；缺失时 503 提示构建）
-│   （登录页不走 Svelte：auth.js 内联 HTML，豁免路由不依赖构建产物）
+│   （登录页不走 Svelte：auth.ts 内联 HTML，豁免路由不依赖构建产物）
 ├── dashboards/                    # 皮肤：每套一个目录，单个 Skin.svelte + 平铺 woff2
-│   ├── _lib/                      # 共享件：frame.svelte.js / fmt.js / Digital.svelte / TrackMap.svelte
+│   ├── _lib/                      # 共享件：frame.svelte.ts / fmt.ts / Digital.svelte / TrackMap.svelte
 │   └── _fonts/                    # OFL 字体库（新皮肤从这里挑字拷贝）
 ├── test/
 │   ├── server/                    # node:test：util/fit/fitlib/probe/compose/inbox/queue/api/auth/skin-build
-│   └── web/                       # vitest：三页 model + 组件 + api/format + skin 共享件
+│   └── web/                       # vitest：四页 model + 组件 + api/format + skin 共享件
 └── docs/
     ├── architecture.md            # 本文
     └── principles.md              # 技术原理（FIT/渲染管线/对齐模型/鉴权）
@@ -99,12 +99,14 @@ actpipe/
 - **Svelte MPA 而非 SPA**：四个页面功能独立，无跨页状态；MPA 入口各自打包，
   首屏只带自己的代码，server 路由逐个切换到构建产物。
 - **node:test 而非 jest**：Node 22 内置，零依赖；前端组件用 Vitest（与 Vite 同生态）。
-- **鉴权用「密码 + httpOnly 签名 cookie」**：单用户场景的最小充分方案；
-  SameSite=Strict 天然防 CSRF；session 存 sqlite/内存，重启失效可接受。
+- **鉴权用「密码 + httpOnly 签名 cookie」**：单用户场景的最小充分方案；令牌无状态
+  （`base64url(exp).hmac(secret)`，30 天有效），secret 落盘数据目录 0600，重启不失效。
+  SameSite=Lax 而非 Strict——Strava OAuth 回跳是跨站顶级 GET，Strict 不带 cookie，
+  回跳落地即 401。
 - **HTTP 装配层是 FeathersJS v5 + Express**：jobs /api/inbox /api/fits /config 四个领域资源
   service 化（拿 hooks + realtime 红利），其余端点（页面/静态/流式/Strava）保持普通
   Express router，不过度设计。URL 契约不变：custom method 的路径段形态
-  （POST /jobs/:id/fit 等）由 app.js 的 customMethodBridge 翻译成 Feathers 的
+  （POST /jobs/:id/fit 等）由 app.ts 的 customMethodBridge 翻译成 Feathers 的
   `x-service-method` 头。错误统一出口把 FeathersError 转成 `{ error, code }`。
 - **socket.io 与原生 WS 共存于同一 http.Server**：upgrade 事件按 path 分发——
   /socket.io/ 归 engine.io，/jobs/:id/progress 归 ws（noServer，CLI 消费，协议不变），

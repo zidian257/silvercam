@@ -23,8 +23,8 @@ sudo env PATH=$PATH:/opt/homebrew/opt/node@22/bin \
   $(which pm2) startup launchd -u "$USER" --hp "$HOME"
 ```
 
-server 监听 `127.0.0.1:8787`，日志在 `~/Library/Logs/actpipe/`。
-调试期前台跑：`node bin/actpipe.js watch`。
+server 监听 `127.0.0.1:18787`（代码默认 8787，本机经 config.json 的 `port` 字段改为 18787），日志在 `~/Library/Logs/actpipe/`。
+调试期前台跑：`node --experimental-strip-types bin/actpipe.ts watch`。
 
 ## 鉴权（映射公网前必开）
 
@@ -36,12 +36,24 @@ actpipe passwd --off            # 关闭，回到无密码模式
 ```
 
 开启后所有路由先过鉴权中间件，未登录访问页面跳登录页、API 返回 401（前端自动跳登录）。
-登录态用 httpOnly + SameSite=Strict 的签名 cookie（7 天有效，server 重启失效需重新登录）。
+登录态是无状态 HMAC 签名令牌，经 HttpOnly + SameSite=Lax 的 cookie 下发（30 天有效；签名密钥落盘数据目录 0600，server 重启不失效）。
+Lax 而非 Strict 的原因：Strava OAuth 回跳是跨站顶级 GET 跳转，Strict 下回跳请求不带 cookie 会直接 401。本机 CLI 用数据目录里的 cli-token 走 `X-Actpipe-Token` 头直通，不打扰终端体验。
+
+### 公网映射（cloudflared）
+
+拓扑：Cloudflare 边缘 TLS 终止 → cloudflared named tunnel（pm2 常驻）→ `http://127.0.0.1:18787`。
+server 已 `trust proxy`，X-Forwarded-Proto 透传后 Strava OAuth 的 redirect_uri 才能拼出 https。
+
+上线前清单：
+
+1. `actpipe passwd '<密码>'`——鉴权是全站唯一闸门，不设密码等于裸奔；
+2. named tunnel 把域名指到 `http://127.0.0.1:18787`（`cloudflared tunnel route dns <tunnel> <域名>`）；
+3. Strava 应用的 Authorization Callback Domain 只填域名即可——回跳全路径 `https://<域名>/api/strava/callback` 由 server 动态拼，不用写进配置。
 
 ## 日常使用
 
 插上相机（USB 文件传输模式或读卡器）→ 自动检测 `DCIM/DJI 001` → **读取素材信息（默认不拷贝，不占磁盘）** →
-弹出通知，**点击通知直接打开确认页**（或手动开 http://127.0.0.1:8787/inbox 、`actpipe inbox --open`）→ 勾选要处理的片段，
+弹出通知，**点击通知直接打开确认页**（或手动开 http://127.0.0.1:18787/inbox 、`actpipe inbox --open`）→ 勾选要处理的片段，
 逐条或批量指定皮肤 / LUT（自动=按 D-Log 策略，`none`=不套）→「开始处理所选」后才从卡复制并进入自动队列：
 选 FIT（`fit_autopick: newest_in_dir` 可免弹窗）→ 渲染 → 编码 → 通知，点击通知在 Finder 定位成片。
 注意确认前卡要保持插入（界面会实时标出「在卡上 / 卡已拔出」）；想插卡即拷盘可把 `inbox_copy_on_detect` 设为 `true`。
@@ -49,6 +61,7 @@ actpipe passwd --off            # 关闭，回到无密码模式
 标题下一行小字是分辨率/帧率/编码/码率/音频等技术参数（ffprobe 收集，含色彩信息与厂商 tag，hover 看全量；旧数据缺新字段自动省略），
 旁边附 ffmpeg 抽 4 帧拼出的胶片条预览（缓存到 `~/.config/actpipe/thumbs/`，点击可放大；卡拔出时显示「预览不可用」）。
 每条素材还要选 FIT：下拉列出 `fit_library_dir` 库里的 .fit（带起止时间），按素材拍摄时间窗与 FIT 活动窗口的重叠自动预选（重叠最大者），无重叠默认「无 FIT（仅拷贝）」；
+库本身在 **/fits 页**集中管理：轨迹缩略图卡片流、上传、Strava 同步入口都在那里。
 选了 FIT 可点「预览」看一帧真实叠加效果（POST /preview，全局串行防并发）。commit 时选「无 FIT」的条目走纯拷贝：ingest 后直接复制到 `<output_dir>/<日期>/raw/原名.MP4`，不进 fit/render/compose。
 跳过的片段不入队，在 inbox 列表里可移除（Alt+点击连 staging 副本一起删）。
 输出：`~/Movies/DashCam/<日期>/原名_皮肤_dash.mp4`。
@@ -68,11 +81,11 @@ actpipe config --set dlog_policy always_lut              # 改全局配置
 + 平铺的 woff2 字体。改文件 → `actpipe preview -t ...` 看效果 → 再改，秒级闭环
 （server 用 esbuild 运行时按需编译皮肤，内容哈希做缓存键，保存即出新版本）。多场景 = 多建皮肤目录，`--skin` 切换。
 皮肤契约：`<script module>` 导出 `CANVAS = { width, height, opacity }`（设计分辨率，渲染按它等比缩放）；
-实例脚本导出 `renderFrame(t, sample)`——用 `dashboards/_lib/frame.svelte.js` 的 `createFrame()` 一行搞定，
+实例脚本导出 `renderFrame(t, sample)`——用 `dashboards/_lib/frame.svelte.ts` 的 `createFrame()` 一行搞定，
 数据由驱动注入 `window.ACTPIPE`；绑定字段在整段 FIT 缺失时元素自动隐藏。
 共享件在 `dashboards/_lib/`：`Digital.svelte`（数字读数组件：值/标签/单位/zone 色条/缺失隐藏/定宽零 CLS）、
 `TrackMap.svelte`（SVG 轨迹图组件：全程/已骑渐变描边/游标光晕，半径经 `markR/haloR/dotR` 定制）、
-`fmt.js`（单位换算/zone 配色/数值格式化/轨迹投影）、`frame.svelte.js`（帧驱动）。
+`fmt.ts`（单位换算/zone 配色/数值格式化/轨迹投影）、`frame.svelte.ts`（帧驱动）。
 
 内置六套预设（inbox 确认页 / studio 调试页可直接切换预览），全部为**平面设计/海报风**的浮空排版：
 零背景色块、零面板（不压视频光感），所有元素收在安全边距内不出界，占地克制不挡主体。
@@ -92,33 +105,40 @@ actpipe config --set dlog_policy always_lut              # 改全局配置
 均为 Google Fonts OFL 授权的 latin 子集）；新皮肤从这里挑字拷贝（平铺、不要子目录），@font-face 相对路径引用，
 **不要写 `font-display:swap`**（逐帧渲染会闪）。
 
-### studio 调试页（按 FIT 调仪表盘）
+### studio 对齐工作台（深链进入，不在导航）
 
-浏览器打开 **http://127.0.0.1:8787/studio**：
-- 上传 .fit 或填服务器上的路径 → 解析出 1 Hz 采样，展示可用字段清单；
-- 时间轴滑块 / 播放（0.5–5×）驱动皮肤 `renderFrame`，逐时刻目检读数与轨迹游标——与正式渲染同一份皮肤代码，所见即所得；
-- 主舞台默认以内置样图（`web/screenshot.png`）为背景，没有视频也能调样式；
-- 可切皮肤、切平滑窗口实时对比；
-- 「合成当前时刻」调 `/preview`：抓真实视频帧 + 套所选 LUT 做背景，叠加当前时刻仪表盘——滑块是 FIT 时间轴，server 自动按 offset 换算到视频时刻，兼作 offset 校准工具；不填视频路径则同样用内置样图兜底。`/preview` 的 `lut` 参数：名字（支持链式）/ `'none'`·`''`·`null`=不套 / `'auto'`=跟随 `dlog_policy`（`ask` 时按素材疑似 D-Log 决定，inbox 预览的「自动」档即此）。
+从 dash 任务行或 inbox 素材组的「对齐」按钮深链进入（带 `?job=` / `?inbox=` 参数，无独立入口）：
+- 舞台 = 皮肤 iframe：视频层注入皮肤文档最底层与仪表盘同文档叠放（透明 iframe 盖 `<video>` 会白屏），WebGL 逐帧套 LUT 实时预览；
+- 播放（带声音——码表开表 beep 是对齐的重要听觉线索）/逐帧步进（←/→，Shift=±10 帧）/SeekBar 拖动，高亮区段 = 当前对齐下有 FIT 数据；
+- 段 / FIT / 皮肤 / LUT 四个下拉实时切换对比，多段录制可跨段跳锚点；
+- 校准只做一件事：播到出发/起步那一帧暂停 →「定格 FIT 起点」（语义 = 当前帧即 FIT 第 0 秒）→ 逐帧微调带着起点一起走。没有手填数字的入口——人看着画面才知道对不对；
+- 无视频源时舞台以内置样图兜底，照样能调皮肤样式。
 
 ### dash 总控台（全部功能与任务状态）
 
-**http://127.0.0.1:8787/dash**：概览卡片（待确认/队列/完成/失败/卷监听/运行时长）+
-任务表（实时进度条、展开日志、失败重试、awaiting_fit 补 FIT）+ inbox 待确认 + 皮肤/LUT 清单 + 只读配置。
-三个页面互通：dash ⇄ inbox ⇄ studio。
+**http://127.0.0.1:18787/dash**：概览卡片（待确认/队列/完成/失败/卷监听/运行时长）+
+任务表（实时进度条、展开日志、失败重试、awaiting_fit 补 FIT、已完成任务一键快剪）+ inbox 待确认 +
+皮肤/LUT 清单 + Strava 面板（填 client_id/secret、OAuth 连接、手动同步）+ LLM 面板（快剪 BYOK：provider 动态表单 + 免保存直测）+ 只读配置。
+四个页面各管一段：/inbox 素材确认 · /fits FIT 库 · /dash 总控台 · /studio 对齐工作台（深链进入，不进导航）。
+
+### 快剪（30s 叙事短片）
+
+对已出片任务一键剪 ~30s 短片：事件从数据里长出来（片头片尾/显著停顿/最长巡航/极速/功率峰/GPS 折返……不套死模板），L0 六槽兜底直接可出片；
+默认再经 L1——内嵌 pi agent（BYOK，默认本机 LM Studio，可换 DeepSeek 等云端）按 `skills/quickcut/SKILL.md` 导演圈幕，工具只有 ffmpeg + commit_cuts（物理校验护栏），任何一环失败一律回退 L0。
+dash 任务行发起，全程日志可查；CLI：`actpipe quickcut analyze|render <job_id>`。完整设计见 requirements.md「快剪」节。
 
 ## 模块独立调试（不起 server）
 
 每段产物落盘在 `jobs/<id>/`，可肉眼检查、可单独重放：
 
 ```bash
-node bin/actpipe.js probe <file>                  # ffprobe + D-Log 三态判定 -> probe.json
-node bin/actpipe.js ingest <src> [--checksum]     # staging 拷贝 + 校验 -> ingest.json
-node bin/actpipe.js fit dump <x.fit>              # FIT 解析/重采样摘要
-node bin/actpipe.js fit align --fit x --video y   # creation_time 锚定 offset 计算
-node bin/actpipe.js render --fit x --fps 10       # 只跑渲染段 -> frames/%05d.png
-node bin/actpipe.js compose <job_dir>             # 只跑合成段（用 job_dir 内产物）
-node bin/actpipe.js watch --simulate <dir>        # 注入假挂载事件
+node --experimental-strip-types bin/actpipe.ts probe <file>                  # ffprobe + D-Log 三态判定 -> probe.json
+node --experimental-strip-types bin/actpipe.ts ingest <src> [--checksum]     # staging 拷贝 + 校验 -> ingest.json
+node --experimental-strip-types bin/actpipe.ts fit dump <x.fit>              # FIT 解析/重采样摘要
+node --experimental-strip-types bin/actpipe.ts fit align --fit x --video y   # creation_time 锚定 offset 计算
+node --experimental-strip-types bin/actpipe.ts render --fit x --fps 10       # 只跑渲染段 -> frames/%05d.png
+node --experimental-strip-types bin/actpipe.ts compose <job_dir>             # 只跑合成段（用 job_dir 内产物）
+node --experimental-strip-types bin/actpipe.ts watch --simulate <dir>        # 注入假挂载事件
 ```
 
 编译版 `./actpipe` 是纯 HTTP/WS 瘦客户端；模块调试入口需用源码 + Node 跑（Playwright 仅支持 Node）。
@@ -127,6 +147,7 @@ node bin/actpipe.js watch --simulate <dir>        # 注入假挂载事件
 
 | 键 | 默认 | 说明 |
 |---|---|---|
+| `port` | `8787` | server 监听端口（仅 127.0.0.1）；本机部署改为 18787 |
 | `dlog_policy` | `ask` | `always_lut` / `never_lut` / `ask`（10-bit HEVC 弹原生确认，按档位记忆） |
 | `default_lut` | `dlogm_rec709` | LUT 名（`luts/` 目录或 `luts` 映射），支持多预设；`luts` 映射值可写链式 `"a+b"`（依次套用，如 `dlogm_rec709+grading_mei` = 先 D-Log M 还原再叠大师滤镜），inbox/studio 下拉与 `/preview` 同样接受链式名 |
 | `global_bias_seconds` | `0` | 读数系统性偏早/偏晚时的常数兜底 |
@@ -140,6 +161,8 @@ node bin/actpipe.js watch --simulate <dir>        # 注入假挂载事件
 | `encoder` / `bitrate` | `hevc_videotoolbox` / `45M` | VideoToolbox 硬编；`-q:v` 系质量参数 VT 不支持，用码率控 |
 | `volume_whitelist` | `[]` | 卷名/UUID 白名单，空 = 任何带相机指纹的卷 |
 | `inbox_copy_on_detect` | `false` | `true` = 检到素材立即拷到 staging；`false` = 只 probe，确认后才拷贝 |
+| `strava.*` | 未配置 | dash「Strava」面板填 client_id/secret（strava.com/settings/api 免费建应用），token 落盘自动刷新；`auto_sync` = 插卡自动同步，`sync_days` = 同步窗口天数 |
+| `llm` | `null` | 快剪 L1 的 BYOK 配置（provider/model/api_key/base_url，dash「LLM」面板填）；null = 自动探测本机 LM Studio，不可达则回退 L0 兜底 |
 
 ## 实现要点（与方案对应）
 
@@ -158,11 +181,11 @@ identity LUT + 假相机卷到 `fixtures/out/`，供无相机/无码表时调试
 ## 开发
 
 ```bash
-npm test              # 后端：node:test（test/server/，82 例）
-npx vitest run        # 前端：vitest（test/web/，66 例）
-npm run build:web     # Svelte 三页构建到 web/dist/（server 挂 /app/* 伺服）
+npm test              # 后端：node:test（test/server/，156 例）
+npx vitest run        # 前端：vitest（test/web/，149 例）
+npm run build:web     # Svelte 四页构建到 web/dist/（server 挂 /app/* 伺服）
 ```
 
-前端是 Svelte 5 + Vite MPA：`web/src/pages/{dash,inbox,studio}/` 各自一个入口，
+前端是 Svelte 5 + Vite MPA：`web/src/pages/{dash,inbox,studio,fits}/` 各自一个入口，
 共享逻辑在 `web/src/lib/`（纯函数）与 `web/src/lib/components/`（组件）。
 架构决策与目录约定见 `docs/architecture.md`，技术原理见 `docs/principles.md`。

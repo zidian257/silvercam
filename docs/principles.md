@@ -20,7 +20,7 @@ DJI Action 5 Pro 拍 D-Log M 视频，码表/手表记录 FIT 运动数据。要
 `.fit` 是 Garmin 定义的二进制协议（Flexible and Interoperable Data Transfer）。
 码表/手表每秒写一条 `record` 消息：时间戳、GPS（semicircle 坐标，要乘
 `180 / 2^31` 换成角度）、心率、功率、踏频、速度、海拔等。我们用
-`@garmin/fitsdk` 解码（`src/modules/fit.js` 的 `decodeFit`）。
+`@garmin/fitsdk` 解码（`src/modules/fit.ts` 的 `decodeFit`）。
 
 两个坑：
 
@@ -93,7 +93,7 @@ LUT 是一个三维查表：把 RGB 输入映射到 RGB 输出。`.cube` 文件�
 
 - **成片**：ffmpeg `lut3d` 滤镜，支持链式 `a.cube+b.cube`（D-Log 还原 → 风格化）；
 - **预览**：studio 页用 WebGL2 `sampler3D` 手写了一个 LUT 着色器
-  （`web/src/lib/lutgl.js`），把视频帧作为纹理上传、逐帧查表。
+  （`web/src/lib/lutgl.ts`），把视频帧作为纹理上传、逐帧查表。
 
 ### 4.3 色彩标签必须显式打
 
@@ -108,15 +108,15 @@ LUT 输出即 Rec.709 SDR。VideoToolbox 编码器不会把色彩三要素写进
 
 每套皮肤是一个目录里的单个 **`Skin.svelte`**：排版、样式、数据绑定都在一个文件里，
 `<script module>` 导出 `CANVAS`（设计分辨率），实例导出 `renderFrame(fitSeconds, sample)`
-（由 `dashboards/_lib/frame.svelte.js` 的 `createFrame()` 提供）。公共读数/轨迹/格式化
-收在 `dashboards/_lib/`（Digital/TrackMap 组件 + fmt.js），六套皮肤复用同一份。
+（由 `dashboards/_lib/frame.svelte.ts` 的 `createFrame()` 提供）。公共读数/轨迹/格式化
+收在 `dashboards/_lib/`（Digital/TrackMap 组件 + fmt.ts），六套皮肤复用同一份。
 
 皮肤不是静态资源——server 用 **esbuild + esbuild-svelte 在运行时按需编译**成 IIFE bundle
-（`src/modules/skin-build.js`），内容哈希作 buildId：渲染管线与 studio 预览都按 buildId
+（`src/modules/skin-build.ts`），内容哈希作 buildId：渲染管线与 studio 预览都按 buildId
 引用编译产物，改一行 CSS 保存即出新版本，预览闭环仍是秒级。
 
 渲染时用 Playwright 开无头 Chromium，逐帧调 `renderFrame` +
-`page.screenshot({ omitBackground: true })` 截出**透明 PNG 序列**（`src/modules/render.js`）。
+`page.screenshot({ omitBackground: true })` 截出**透明 PNG 序列**（`src/modules/render.ts`）。
 
 为什么是 Svelte 而不是手写 HTML + binding DSL：皮肤迭代到后来，每套的 DOM 结构和
 动效逻辑差异越来越大，DSL 表达能力成了瓶颈；组件化后排版就是写 Svelte，共享件就是
@@ -138,12 +138,12 @@ ffmpeg `overlay` 滤镜把 PNG 序列叠在（套过 LUT 的）视频上，`star
 一个真坑：透明的仪表盘 iframe 盖在 `<video>` 上，Chrome 的硬件视频层合成会
 失败，画面全白。解法是把视频元素**注入皮肤文档的最底层**（`<video id="vsrc">`
 + 隐藏 WebGL canvas `#glc`），同文档内叠放，合成路径就正常了
-（`src/modules/skin-build.js` 的 `buildSkinHtml` 按场景注入；纯渲染管线不传
+（`src/modules/skin-build.ts` 的 `buildSkinHtml` 按场景注入；纯渲染管线不传
 视频时绝不注入 video 层，否则黑底会毁掉透明 PNG）。
 
 ## 6. 流水线与状态机
 
-`JobQueue`（`src/server/queue.js`）：`queued → ingesting → probing →
+`JobQueue`（`src/server/queue.ts`）：`queued → ingesting → probing →
 (awaiting_fit) → rendering → encoding → done/failed`。每个步骤完成即落盘
 `job.json`，进程重启后从磁盘恢复、已完成步骤跳过（断点续跑）。
 
@@ -164,18 +164,22 @@ ffmpeg 会抢满 CPU——串行在这里是特性。
 
 ## 8. Strava 集成
 
-FIT 从 Strava 导：OAuth 授权码流程（`client_id/secret` 存本地配置，
-token 自动刷新），拉活动 streams（time/latlng/watts/heartrate…）**合成**成标准
-FIT 文件入库。触发点是插卡（不轮询）——插卡时活动一般刚好同步到 Strava。
+FIT 从 Strava 导：OAuth 授权码流程（`client_id/secret` 存本地配置，token 自动
+刷新；回跳路径 `/api/strava/callback`，公网域名下靠 `trust proxy` 拼对 https，
+见 §12），拉活动 streams（time/latlng/watts/heartrate…）**合成**成标准 FIT
+文件入库，/fits 页可见。触发两个：插卡自动（`strava.auto_sync` 开且已授权，
+不轮询——插卡时活动一般刚好同步到 Strava）与 dash/fits 页手动「同步」。
 
 ## 9. 鉴权
 
-单用户场景的最小充分方案（`src/server/auth.js`）：
+单用户场景的最小充分方案（`src/server/auth.ts`）：
 
 - 密码只存 **scrypt 哈希**（随机盐，永不落明文）；
-- 会话令牌 = `base64url(exp).hmac(secret)`，无状态；secret 存数据目录 0600；
-- cookie `HttpOnly + SameSite=Strict`：JS 读不到（防 XSS 窃取），跨站不携带
-  （天然防 CSRF，不需要 CSRF token）；
+- 会话令牌 = `base64url(exp).hmac(secret)`，无状态，30 天有效；secret 存数据目录
+  0600，重启不失效；
+- cookie `HttpOnly + SameSite=Lax`：JS 读不到（防 XSS 窃取），跨站写请求不携带
+  （防 CSRF，不需要 CSRF token）。不用 Strict 是因为 Strava OAuth 回跳是跨站
+  顶级 GET——Strict 不带 cookie，授权回来落地即 401；
 - 本机 CLI 用数据目录里的 `cli-token`（0600）走 `X-Actpipe-Token` 头直通，
   不打扰终端体验；
 - 未设密码 = 鉴权关闭（本地默认体验）；`actpipe passwd <pw>` 开启。
@@ -186,8 +190,34 @@ FIT 文件入库。触发点是插卡（不轮询）——插卡时活动一般�
 ## 10. 前端工程
 
 - **Svelte 5 MPA**（不是 SPA）：dash/inbox/studio/fits 四个页面功能完全独立，无跨页
-  状态；各自打包，首屏只带自己的代码（`vite.config.js` 多入口，产物在
+  状态；各自打包，首屏只带自己的代码（`vite.config.ts` 多入口，产物在
   `web/dist`，server 以 `/app/` 前缀伺服）。
-- **TDD**：领域逻辑全部抽成纯函数（`web/src/lib/*.js`）用 Vitest 测；
+- **TDD**：领域逻辑全部抽成纯函数（`web/src/lib/*.ts`）用 Vitest 测；
   组件用 `@testing-library/svelte` 测渲染与交互。后端用 Node 内置
   `node:test`（零新依赖），fixture 由 `fixtures/make-fixtures.mjs` 生成。
+
+## 11. 快剪：事件菜单 + Skill 导演
+
+把已出片的成片剪成 ~30s 短片，分两层。**L0 确定性内核**（`src/modules/quickcut.ts`）
+从 FIT 数据探测「事件菜单」：通用事件（片头/首次移动/停顿/巡航/极速/终停/片尾）
+任何素材都有，条件事件（功率峰/冲刺/心率峰/海拔极值/坡度翻转/GPS 折返点）有对应
+数据才出现——叙事不写死成场景模板，数据里有什么就出什么。定位全走 FIT 流逝秒
+（码表自动暂停会留时间空洞，样本下标 ≠ 流逝时间），逐段映射成视频秒；不在任何
+视频段覆盖内的事件标 `videoS=null`，不可剪辑。
+
+**L1 skill runner**（`src/server/quickcut-agent.ts`）：pi agent 加载
+`skills/quickcut/SKILL.md` 当导演指令，按菜单圈幕——判断给 LLM，机械给代码。
+agent 只有两件工具：`ffmpeg`（抽帧/探测，args 现场编，产物图片自动回传）与
+`commit_cuts`（唯一出口）；`validateCuts` 只把守物理合法（区间内、保序不重叠、
+幕数 ≤12、总时长 ≤180s），圈哪段、几幕、每幕多长全是导演的判断。任何一环不可用
+（模型无视觉/skill 缺失/agent 异常/未提交剪辑点）一律回退 L0 原计划。
+
+## 12. 公网映射
+
+拓扑：Cloudflare 边缘 TLS 终止 → cloudflared named tunnel（pm2 常驻）→
+`http://127.0.0.1:<port>`。server 端两件事让它成立：
+
+- `app.set('trust proxy', true)`：隧道后面必须信 `X-Forwarded-Proto`，否则
+  Strava OAuth 的 redirect_uri 会按 http 拼，回跳与授权域名对不上；
+- 鉴权是唯一闸门（见 §9）：页面、API、静态资源、WS upgrade 全过同一个中间件，
+  暴露到公网没有漏网的入口——前提是 `actpipe passwd` 已开密码。

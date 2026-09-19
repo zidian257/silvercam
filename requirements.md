@@ -12,17 +12,16 @@
 │                                                               │
 │  pm2 常驻（pm2 startup → launchd 登录自启）                     │
 │  ┌─────────────────────────────────────────────────────┐     │
-│  │  server (Node.js 22 LTS, Hono + ws)                  │     │
-│  │                                                      │     │
+│  │  server (Node.js 22 LTS, FeathersJS/Express          │     │
+│  │        + socket.io/ws)                               │     │
 │  │  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │     │
 │  │  │ Watcher  │─▶│ JobQueue │─▶│ Pipeline Worker   │  │     │
 │  │  │(卷挂载监听)│  │(串行队列) │  │  · ffprobe 探测    │  │     │
 │  │  └──────────┘  └──────────┘  │  · FIT 解析/对齐   │  │     │
 │  │        │                     │  · 仪表盘帧渲染     │  │     │
 │  │        ▼                     │  · ffmpeg 合成     │  │     │
-│  │  原生文件选择对话框            └────────┬──────────┘  │     │
-│  │  (osascript choose file)              │              │     │
-│  │  macOS 通知 (osascript/terminal-notifier)│           │     │
+│  │  通知 / 确认对话框             └────────┬──────────┘  │     │
+│  │  (osascript / terminal-notifier)      │              │     │
 │  └───────────────────────────────────────┼─────────────┘     │
 │                                          │ HTTP / WebSocket  │
 │  ┌───────────────────────────────────────┴─────────────┐     │
@@ -36,7 +35,7 @@
 
 **职责划分**
 - **server**：唯一的"大脑"。监听卷挂载、管理任务队列、弹原生对话框、调度 ffmpeg、推送进度、发系统通知。由 pm2 托管常驻，登录自启（§9）。技术栈 **Node.js 22 LTS**，**全站 TypeScript**（server/CLI/web/皮肤共享件全量 .ts，见 §10）；Node 22 `--experimental-strip-types` 直接运行 .ts，无构建步骤。Bun 的职责仅两项：开发期装包/脚本加速、把 CLI 编译成单文件二进制（§9）；**渲染 worker 固定跑在 Node 上**——Playwright 官方仅支持 Node，Bun 运行时兼容属"能用但无保证"，产能核心不求新。
-- **client**：无状态瘦客户端（CLI 单文件二进制），通过 HTTP/WebSocket 与 server 通信。仪表盘自定义**不做 GUI 编辑器**——直接改皮肤文件（HTML/CSS/binding.json）+ `/preview` 预览闭环，见 §5。
+- **client**：无状态瘦客户端（CLI 单文件二进制），通过 HTTP/WebSocket 与 server 通信。仪表盘自定义**不做 GUI 编辑器**——直接改皮肤文件（单文件 `Skin.svelte`）+ `/preview` 预览闭环，见 §5。
 - **ffmpeg**：只做一件事——读原始视频 + 读预渲染的仪表盘 PNG 序列 → 滤镜合成 → 编码。所有"绘制"都在浏览器侧（HTML/CSS）完成，不碰 drawtext/drawbox 那套难维护的原生滤镜。
 
 **为什么这样拆**
@@ -85,14 +84,14 @@ Node 栈下没有 DiskArbitration 的官方绑定（pyobjc 为 Python 独占）�
 - 对每个文件检查"大小稳定"（连续两次 stat 间隔 1 s 不变）再入队；如需精细感知"拷贝进行中"，用同一个 chokidar 加深 `depth` 盯卷内目录即可；
 - 已处理文件记入本地 SQLite（按 文件路径+大小+mtime 或相机内文件序号），重复插拔不重复出片。
 
-### 2.4 素材落地：默认先拷本地暂存，再进流水线
+### 2.4 素材落地：确认前只读卡，commit 后才拷 staging
 
-管线对卡的访问是**只读**（顺序读 15 MB/s 量级，直读也能跑），但默认仍走 staging：
+管线对卡的访问是**只读**（顺序读 15 MB/s 量级）。检到素材默认**只 probe 元信息、不落盘**（`inbox_copy_on_detect: false`，不占磁盘，代价是确认前卡不能拔）；在 inbox 确认页 commit 后才拷本地暂存、进流水线：
 
-- **拷贝**：入队文件先 `fs.copyFile` 到 `staging/` 目录，校验大小/mtime 一致即算完成（可选 checksum）；拷完相机/读卡器即可拔，后续探测、试渲染、重跑全走本地 NVMe；
+- **拷贝**：commit 入队后文件 `fs.copyFile` 到 `staging/` 目录，校验大小/mtime 一致即算完成（可选 checksum）；拷完相机/读卡器即可拔，后续探测、试渲染、重跑全走本地 NVMe；
 - **收益**：作业中途断线/弹卷不炸任务；重跑与换皮肤再出片无需相机在场；读卡器下 10 GB 约 35 s；
 - **暂存生命周期**：出片成功后按配置 `staging_retention: keep | delete_on_success` 处理；**卡上原始文件默认绝不动**，`delete_from_card_after_success` 为默认关闭的高危开关；
-- **例外**：小 clip 快速验证可用 `actpipe run --direct` 直读卡跳过拷贝。
+- **例外**：小 clip 快速验证可用 `actpipe run --direct` 直读卡跳过拷贝；想插卡即拷盘把 `inbox_copy_on_detect` 设为 `true`。
 
 ---
 
@@ -171,62 +170,37 @@ LUT 文件：默认指向 DJI 官方 **D-Log M to Rec.709** 的 `.cube`，路径
 
 ### 5.2 Widget（仪表盘元素）体系
 
-术语约定：**一个元素 = 一种显示形式（渲染器）+ 绑定一个数据字段**；一套皮肤（dashboard）摆 N 个元素。渲染器可复用——心率、功率、踏频用的是同一个 `digital` 渲染器的三个实例。
+术语约定：**一个元素 = 一个共享组件实例 + 绑定一个数据字段**；一套皮肤摆 N 个元素。组件可复用——心率、功率、踏频用的是同一个 `Digital` 组件的三个实例。
 
-每个元素是一个 Web Component（或约定俗成的 div + 绑定声明），统一契约：由 `renderFrame(t, sample)` 驱动，按绑定字段更新自身。`sample` 是当前时刻（已按 offset 对齐、可含秒间插值）的数据点。**缺数据自动隐藏**：元素在绑定中声明依赖字段，该字段在整段 FIT 中缺失（如没带心率带、无 GPS）则不渲染，不打"--"。
+每个元素是 `dashboards/_lib/` 里的 Svelte 共享组件（或皮肤里自写的组件），统一契约：由 `renderFrame(t, sample)` 驱动，按绑定字段更新自身。`sample` 是当前时刻（已按 offset 对齐、可含秒间插值）的数据点。**缺数据自动隐藏**：字段在整段 FIT 中缺失（如没带心率带、无 GPS）则该元素不渲染，不打"--"。
 
-渲染器清单（计划内仅两个）：
+共享组件清单（`dashboards/_lib/`）：
 
-| 渲染器 | 说明 |
+| 组件 | 说明 |
 |---|---|
-| `digital` | 大号数字读数（值 + 单位 + 标签） |
-| `map` | GPS 轨迹图（见 5.4） |
+| `Digital.svelte` | 大号数字读数（值 + 单位 + 标签 + zone 色条，定宽零 CLS） |
+| `TrackMap.svelte` | GPS 轨迹图（见 5.4） |
 
-**不为其它显示形式（圆环表、海拔曲线、条形等）做任何内置计划**：皮肤是开放的 HTML/JS，想要新形式时在皮肤目录里自行编写组件即可，流水线核心零改动。自定义的权力在皮肤作者，不在内置清单。
+**不为其它显示形式（圆环表、海拔曲线、条形等）做任何内置计划**：皮肤就是一个 Svelte 文件，想要新形式时在皮肤目录里自行编写组件即可，流水线核心零改动。自定义的权力在皮肤作者，不在内置清单。
 
-**默认皮肤（6 个元素）**：速度（digital × `speed`，默认 km/h，可切 mph）、心率（digital × `heart_rate`）、功率（digital × `power`）、踏频（digital × `cadence`）、坡度（digital × `grade`，FIT 无此字段时用 altitude+distance 重算，仍无数据则自动隐藏）、轨迹图（map × `position`）。其它字段随时在 binding.json 里加一行即得。
+**默认皮肤（6 个元素）**：速度（Digital × `speed`，默认 km/h，可切 mph）、心率（Digital × `heart_rate`）、功率（Digital × `power`）、踏频（Digital × `cadence`）、坡度（Digital × `grade`，FIT 无此字段时用 altitude+distance 重算，仍无数据则自动隐藏）、轨迹图（TrackMap × `position`）。其它字段在 Skin.svelte 里加一行组件即得。
 
-### 5.3 布局与样式配置：HTML/CSS 模板 + JSON 数据绑定
+### 5.3 布局与样式：Skin.svelte 单文件
 
 一套仪表盘 = 一个目录（即一个"皮肤"）：
 
 ```
 dashboards/
   virb_like/
-    template.html     # 结构：widget 的 DOM、锚点布局（flex/grid/绝对定位随意）
-    style.css         # 样式：字体、颜色、圆角、阴影、透明度——全套 CSS 能力
-    binding.json      # 数据绑定与行为参数（见下）
-    preview.png
+    Skin.svelte       # 排版 + 样式 + 数据绑定一体（<script module> 导契约，<style> scoped 样式）
+    *.woff2           # 字体平铺（@font-face 相对路径引用；不写 font-display:swap——逐帧渲染会闪）
 ```
 
-`binding.json` 只声明"哪个 DOM 节点吃什么数据、怎么变换"，样式一律归 CSS：
+契约：`<script module>` 导出 `CANVAS = { width, height, opacity }`（设计分辨率，渲染按它等比缩放）；实例脚本导出 `renderFrame(t, sample)`——用 `dashboards/_lib/frame.svelte.ts` 的 `createFrame()` 一行搞定，数据由驱动注入 `window.ACTPIPE`。共享件（Digital/TrackMap/fmt）收在 `dashboards/_lib/`，import 即用。
 
-```json
-{
-  "canvas": { "width": 3840, "height": 2160, "global_opacity": 0.92 },
-  "data": { "smooth_window_s": 3, "units": { "speed": "km/h" } },
-  "widgets": [
-    { "id": "#speed-gauge", "type": "radial_gauge", "field": "speed",
-      "range": [0, 60],
-      "zones": [[0,35,"#39D353"],[35,50,"#FFB020"],[50,60,"#FF3B30"]] },
-    { "id": "#hr", "type": "digital", "field": "heart_rate", "unit": "bpm" },
-    { "id": "#map", "type": "map", "field": "position",
-      "map_style": "track", "show_start_end": true },
-    { "id": "#ele", "type": "elevation_profile", "field": "altitude" }
-  ]
-}
-```
+皮肤不是静态资源：server 用 **esbuild + esbuild-svelte 运行时按需编译**（`src/modules/skin-build.ts`），内容哈希作 buildId，渲染管线与 studio 预览都按 buildId 引用编译产物——改一行 CSS 保存即出新版本，预览闭环仍是秒级。
 
-```css
-/* style.css —— 自定义的全部火力都在这里，无需发明新配置语法 */
-#speed-gauge { position: absolute; left: 48px; bottom: 48px; width: 300px;
-               background: rgba(0,0,0,.4); border-radius: 18px;
-               font: 600 96px "Helvetica Neue"; color: #fff; opacity: .95; }
-#map { position: absolute; right: 48px; top: 48px; width: 520px; height: 390px;
-       background: rgba(11,27,43,.8); border-radius: 24px; }
-```
-
-自定义维度覆盖：**布局**（CSS 全能力：绝对定位/flex/grid、px 或 %）、**字体**（`@font-face` 指向任意 ttf/otf，macOS 系统字体直接用）、**颜色**（含区间配色）、**透明度**（整层 `global_opacity` / 单 widget CSS `opacity` / 底衬 `rgba()` 三级独立）、**单位与量程**、**平滑窗口**。多场景 = 多建几个皮肤目录，CLI 一个参数切换。自定义工作流：改文件 → `actpipe preview -t ...` 看效果 → 再改，闭环秒级。
+自定义维度覆盖：**布局**（CSS 全能力：绝对定位/flex/grid、px 或 %）、**字体**（`@font-face` 指向任意 woff2/ttf/otf，macOS 系统字体直接用）、**颜色**（含区间配色）、**透明度**（整层 `CANVAS.opacity` / 单元素 CSS `opacity` / 底衬 `rgba()` 三级独立）、**单位与量程**（组件 props，fmt.ts 换算）、**平滑窗口**（全局 `smooth_window_s`）。多场景 = 多建几个皮肤目录，CLI 一个参数切换。自定义工作流：改文件 → `actpipe preview -t ...` 看效果 → 再改，闭环秒级。
 
 ### 5.4 地图绘制（浏览器内）
 - `track` 模式（默认且唯一内置，离线可用）：经纬度投影到以轨迹质心为原点的等距平面坐标，按容器尺寸自适应缩放，用 **SVG path / Canvas** 画全程轨迹（半透明描边）+ 已走过高亮段 + 当前位置圆点 + 起终点标记。Garmin VIRB 同款观感；轨迹数据预处理后作为 JSON 一次性注入页面，每帧只移动游标，零重算。
@@ -293,12 +267,11 @@ ffmpeg -hide_banner -loglevel error \
 
 ## 7. 交互、状态与通知
 
-### 7.1 .fit 选择对话框
-server 由 pm2 运行在用户登录会话内，可直接调起原生对话框：
-```bash
-osascript -e 'POSIX path of (choose file with prompt "选择 .fit 文件" of type {"fit"})'
-```
-配套策略：`config` 里可设 `fit_autopick: newest_in_dir`（默认目录取最新 .fit，弹窗变成"确认/换文件"），追求全自动时直接免弹窗。
+### 7.1 FIT 选择：FIT 库为主路径，原生对话框兜底
+
+主路径在 Web：FIT 库页 `/fits` 集中管理（Strava 同步 / 手动上传入库，轨迹缩略图卡片流）；inbox 确认页的 FIT 下拉列出库内 .fit，按素材拍摄时间窗与 FIT 活动窗口的重叠**自动预选**（重叠最大者），无重叠默认「无 FIT（仅拷贝）」。
+
+原生对话框只剩两个角落：CLI 手动建任务未指定 fit 且 `fit_autopick` 未命中时，才弹 osascript `choose file` 兜底；`dlog_policy: ask` 的 10-bit HEVC 确认框同理保留（弹得起来是因为 server 由 pm2 跑在用户登录会话内）。
 
 ### 7.2 状态提示
 - **跑之前**：通知"检测到 N 段素材，开始处理"；
@@ -316,11 +289,13 @@ osascript -e 'POSIX path of (choose file with prompt "选择 .fit 文件" of typ
 | 接口 | 说明 |
 |---|---|
 | `POST /jobs` | 手动建任务（指定视频 + fit + profile + offset） |
-| `GET /jobs` / `GET /jobs/{id}` | 任务列表 / 详情（状态机：queued→probing→awaiting_fit→rendering→encoding→done/failed） |
+| `GET /jobs` / `GET /jobs/{id}` | 任务列表 / 详情（状态机：queued→ingesting→probing→awaiting_fit→rendering→encoding→done/failed；纯拷贝分支 ingesting→copying→done） |
 | `WS /jobs/{id}/progress` | ffmpeg 进度 + 渲染进度推送 |
-| `GET /config` / `PUT /config` | 读写全局 config 与皮肤绑定（binding.json/CSS） |
+| `GET /config` / `PUT /config` | 读写全局 config（皮肤/LUT/偏移/快剪 LLM 等） |
 | `POST /preview` | **单帧合成预览**：给定时刻 t，ffmpeg 抓视频帧 + 套 LUT 作为皮肤页面 CSS 背景，页面渲染 t 时刻读数后整页截图返回 PNG。与正式渲染同一条代码路径，所见即所得零偏差；调样式的迭代闭环，兼作 offset 校准的例外通道 |
 | `GET /luts` | LUT 预设列表 |
+
+其余主要端点（普通 Express 路由与 service，见 `src/server/middleware/media.ts`、`src/server/services/`）：`/api/inbox`（find/remove + `commit`/`align`/`reopen`，素材确认流）、`/api/fits`（find/create = FIT 库清单/上传；`GET /api/fits/track/:name` 轨迹抽稀、`GET /api/fits/file/:name` 原始下载）、`GET /api/align/*`（studio 数据源/采样/视频流）、`/api/strava/*`（OAuth + 同步）、`/quickcuts`（find/get/create/analyze，快剪）、`GET /api/status`（全局状态）。
 
 CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`actpipe watch`（前台跑 server 调试用）、`actpipe run --video x --fit y [--direct] [--offset -3.5]`、`actpipe probe / ingest / fit / render / compose`（分段单跑与重放）、`actpipe preview -t 00:01:23`、`actpipe status`、`actpipe logs`。
 
@@ -328,10 +303,11 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 
 ## 9. 部署形态
 
-- 依赖：Node.js 22 LTS + `npm i hono ws playwright @garmin/fitsdk chokidar` + `npx playwright install chromium`；ffmpeg 走 Homebrew；
-- **server**：从源码运行（node_modules + Playwright 浏览器本机安装），由 **pm2** 托管：`pm2 start server.js --name actpipe --interpreter $(which node)`（钉死解释器路径，防 nvm 升级后复活失败）；`pm2 startup launchd` + `pm2 save` 实现登录自启（pm2 自动生成 LaunchAgent，仍在用户会话内运行，osascript 弹窗/系统通知不受影响）；崩溃自动重启、`pm2 logs/status` 现成，日志同时落 `~/Library/Logs/actpipe/`。**不编译成二进制**：Playwright 需拉起外部 driver 进程与独立浏览器二进制，且仅官方支持 Node 运行时，编译无收益。
+- 依赖：Node.js 22 LTS + `npm i`（@feathersjs/express/socket.io、ws、playwright、@garmin/fitsdk、chokidar 等，见 package.json）+ `npx playwright install chromium`；ffmpeg 走 Homebrew；
+- **server**：从源码运行（node_modules + Playwright 浏览器本机安装），由 **pm2** 托管：`pm2 start ecosystem.config.cjs`（钉死解释器 `/opt/homebrew/opt/node@22/bin/node`，node_args = `--experimental-sqlite --experimental-strip-types`，防 nvm 升级后复活失败）；`pm2 startup launchd` + `pm2 save` 实现登录自启（pm2 自动生成 LaunchAgent，仍在用户会话内运行，osascript 弹窗/系统通知不受影响）；崩溃自动重启、`pm2 logs/status` 现成，日志同时落 `~/Library/Logs/actpipe/`。**不编译成二进制**：Playwright 需拉起外部 driver 进程与独立浏览器二进制，且仅官方支持 Node 运行时，编译无收益。
 - **client（CLI）**：用 **`bun build --compile`** 打成单文件二进制 `actpipe`（纯 HTTP/WS 瘦客户端，无原生模块，编译干净），放 PATH 随处可用。Bun 的职责边界就到此为止——打包工具，不做运行时。
-- 全部配置集中在 `~/.config/actpipe/`（`config.json`（全局配置：输出目录、默认 LUT、`global_bias_seconds`、`fit_autopick` 等）、`dashboards/`（皮肤目录，HTML+CSS+binding.json）、`luts/`、`jobs.db`），可直接 git 管理、多机同步。
+- 全部配置集中在 `~/.config/actpipe/`（`config.json`（全局配置：输出目录、默认 LUT、`global_bias_seconds`、`fit_autopick` 等）、`dashboards/`（皮肤目录，Skin.svelte 单文件 + 平铺 woff2）、`luts/`、`jobs.db`），可直接 git 管理、多机同步。
+- **公网映射**：Cloudflare 边缘 TLS 终止 → cloudflared named tunnel（pm2 常驻）→ `http://127.0.0.1:<port>`。前置两件：`actpipe passwd` 开鉴权（唯一闸门）；Strava 侧 Authorization Callback Domain 只填域名（回跳全路径 `https://<域名>/api/strava/callback` 由 server 经 `trust proxy` + X-Forwarded-Proto 动态拼出 https）。
 
 ---
 
@@ -365,7 +341,7 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 
 **全站 TypeScript（无构建步骤）**：server（FeathersJS）/ CLI / web（Svelte 5）/ 皮肤共享件（dashboards/_lib）/ 全部测试，64 个文件 .js→.ts 迁移完成。运行时 = Node 22 `--experimental-strip-types` 类型擦除直跑 .ts（pm2 `node_args: --experimental-sqlite --experimental-strip-types`，入口 `src/server/pm2-entry.cjs → index.ts`）；`tsc --noEmit` 纯检查不输出。约束：`erasableSyntaxOnly`（禁 enum/namespace/参数属性）+ `verbatimModuleSyntax`（类型导入必须 `import type`）+ 相对导入带 .ts 扩展名。共享领域类型在 `src/types.ts`（ActpipeConfig/Job/ProbeResult/SessionInfo/FramesArtifact 等）；外部动态数据（ffprobe/FIT/osascript/ws 负载）约定 any/unknown + 注释。
 
-**质量门（当前全绿）**：`npm test`（node:test 后端 105）· `npx vitest run`（web 84）· `npm run typecheck`（tsc 后端 0 错误）· `npm run typecheck:web`（svelte-check 0 错误，4 个历史 a11y/slot 警告保留）· `npm run build:web`。注意 svelte-check 与 TypeScript 7 不兼容，钉 `typescript@~6`。
+**质量门（当前全绿）**：`npm test`（node:test 后端 156）· `npx vitest run`（web 149）· `npm run typecheck`（tsc 后端 0 错误）· `npm run typecheck:web`（svelte-check 0 错误，4 个历史 a11y/slot 警告保留）· `npm run build:web`。注意 svelte-check 与 TypeScript 7 不兼容，钉 `typescript@~6`。
 
 **Strava→pregen 自动渲染**：FIT 库（`fit_library_dir` 默认 `~/.config/actpipe/fits`）是唯一挂钩——Strava 同步/手动载入/上传的 .fit 落库即触发 `PregenService`（`src/server/pregen.ts`）串行预生成 PNG 序列（生产规格：`pregen.fps` null = 跟随 `overlay_fps`、`pregen.resolutions`、当前皮肤），任务渲染直接整段 cache HIT。纪律：一次一个、任务队列忙等空闲、swap 风暴过速率制水位门；`pregen.enabled: false` 可整体关闭。
 
