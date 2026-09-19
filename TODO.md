@@ -61,3 +61,13 @@
 - **产品**：Casey 的味道 = 有品位的授权曲 + 音乐永远垫在人声/环境声下面。我们不做内置曲库（版权红线），做「用户自带曲库 + 自动混音」：用户把 Epidemic Sound / Artlist 下载的曲目丢进目录，系统负责混。
 - **技术**：`config.music_dirs` 曲库目录；ffmpeg `amix` + `sidechaincompress`（原声做 ducking，讲话时音乐自动压低）；选曲入口挂 inbox/快剪面板。二期：beat 检测对齐剪辑点（aubio/onset），让快剪卡在鼓点上。
 - **风险**：版权只能用户自带，产品里写明；beat 对齐是二期，一期先「能配乐、不盖人声」。
+
+### 9. 平台自动上传：YouTube / B 站 / 视频号（2026-09-19 调研）
+
+目标：出片后可选自动上传，全局开关 + 每条覆盖（默认关）。调研结论（2026-09）：
+
+- **YouTube（官方 API，最顺，先做）**：Data API v3 `videos.insert` 断点续传上传，OAuth2（与 Strava 集成同构：client_id/secret → 授权 → refresh token 自动续）。配额 2025-12 起从 1600 降到 ~100 units/次（默认 10000/天 ≈ 每天 100 条，管够）。**大坑**：2020-07 后创建的未审计 API 项目，上传的视频会被强制锁 private 且不可申诉——个人用接受「传完是私享，去 Studio 手动转公开」，或给项目过 Google 审计（麻烦）。OAuth consent 处于 testing 模式时 refresh token 7 天过期，要发布到 production。
+- **B 站（社区方案，次做）**：官方开放平台不对个人开放上传。事实标准是 **biliup-rs**（Rust CLI，macOS 可用）：扫码登录一次 → cookie 长效保存 → 命令行投稿。我们当外部二进制调（同 ffmpeg 的集成姿势），不自己实现 B 站签名/分片。cookie 过期后重新扫码。
+- **视频号（RPA，最后做）**：无任何公开个人上传 API，只有 channels.weixin.qq.com 网页后台。可行路径 = Playwright 持久化 user-data-dir 驱动网页上传（扫码登录一次，会话保活）——技术栈我们现成（渲染引擎同款），但页面结构一变就碎，且有平台条款灰度风险。
+- **产品形态**：`config.upload.{youtube,bilibili,channels}.enabled` 默认全关；inbox commit 加「上传」勾选项（默认跟随全局）；上传实现为独立任务状态机（uploading/done/failed + 平台链接落库 + 通知带链接）。**内容分野**：快剪 30s → 视频号/短视频场景；全片 → YouTube/B 站。上传失败不阻塞本地出片，只发失败通知。
+- **风险**：视频号 RPA 最脆，页面改版即失效，需要维护预期；B 站 cookie 方案违反平台条款的灰度存在（个人低频使用社区工具普遍在用）。
