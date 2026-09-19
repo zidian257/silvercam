@@ -98,6 +98,14 @@ test('GET /：落地页重定向到 /dash', async () => {
   assert.equal(r.headers.get('location'), '/dash');
 });
 
+test('GET /favicon.ico：SVG 图标（鉴权豁免由 auth.test 保证）', async () => {
+  const { app } = mkApp();
+  const r = await request(app, '/favicon.ico');
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-type')!, /image\/svg\+xml/);
+  assert.match(await r.text(), /<svg/);
+});
+
 test('POST /jobs：视频不存在 400，存在则 201 入队', async () => {
   const { app, queue } = mkApp();
   const bad = await request(app, '/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ video: '/nope.mp4' }) });

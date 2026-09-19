@@ -64,6 +64,7 @@ function mkApp({ passwordHash = hashPassword('pw123'), cliTokenFile }: { passwor
   auth.mountRoutes(app);
   app.get('/dash', (req: Request, res: Response) => res.type('html').send('<b>dash</b>'));
   app.get('/api/inbox', (req: Request, res: Response) => res.json([]));
+  app.get('/favicon.ico', (req: Request, res: Response) => res.type('image/svg+xml').send('<svg/>'));
   return { app, auth, dir };
 }
 
@@ -118,4 +119,10 @@ test('/login 页面本身不需要登录', async () => {
   const r = await request(app, '/login');
   assert.equal(r.status, 200);
   assert.match(await r.text(), /actpipe/);
+});
+
+test('/favicon.ico 豁免鉴权（登录页未登录也要能显示图标）', async () => {
+  const { app } = mkApp();
+  const r = await request(app, '/favicon.ico');
+  assert.equal(r.status, 200);
 });

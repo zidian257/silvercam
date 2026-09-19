@@ -23,6 +23,14 @@ export function createPagesRouter() {
 
   router.get('/', (req: Request, res: Response) => res.redirect('/dash'));
 
+  // favicon：直接读源码目录（不依赖 web 构建产物），auth 中间件已豁免此路径
+  router.get('/favicon.ico', (req: Request, res: Response) => {
+    const file = path.join(REPO_ROOT, 'web', 'src', 'public', 'favicon.svg');
+    if (!fs.existsSync(file)) return res.status(404).type('text').send('not found');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.type('image/svg+xml').send(fs.readFileSync(file, 'utf8'));
+  });
+
   // studio = 编辑预览工作台（对齐页）：看视频、LUT/皮肤实时预览、定格校准时间轴
   router.get('/studio', servePage('studio'));
   // 旧链接兼容：/align → /studio

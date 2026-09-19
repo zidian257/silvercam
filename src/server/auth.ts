@@ -65,6 +65,7 @@ export const SESSION_COOKIE = 'actpipe_session';
 const LOGIN_PAGE = `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>actpipe — 登录</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
 <style>
   :root { color-scheme: light; }
   body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
@@ -131,7 +132,7 @@ export function createAuth({ configRef, dataDir }: { configRef: ConfigRef; dataD
       if (!enabled()) return next();
       const q = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
       const p = req.url.slice(0, req.url.length - q.length);
-      if (p === '/login' || p === '/api/login') return next();
+      if (p === '/login' || p === '/api/login' || p === '/favicon.ico') return next();
       if (authorized(req)) return next();
       // API/WS/socket.io 一律 401；页面 302 到登录页（next 回跳）
       if (req.headers.upgrade || p.startsWith('/api') || p.startsWith('/jobs') || p.startsWith('/socket.io')) {
