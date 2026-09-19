@@ -11,10 +11,24 @@ import type { QueueLike } from '../../src/server/services/jobs.ts';
 process.env.ACTPIPE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'actpipe-api-'));
 const { createApp } = await import('../../src/server/app.ts');
 const { DEFAULTS } = await import('../../src/lib/config.ts');
+// @ts-expect-error -- fitsdk 的 index.d.ts 用无扩展名 re-export，nodenext 解析不到（同 src/modules/fit.ts）
+const { Encoder, Profile } = await import('@garmin/fitsdk');
 
 const FIT = path.resolve('fixtures/out/activity.fit');
 const VIDEO = path.resolve('fixtures/out/DJI_20260906100100.MP4');
 const LUT = path.resolve('fixtures/out/identity.cube');
+
+// 室内骑行台形态的最小 FIT：有 record，无 position（轨迹端点的空 GPS 用例）
+function makeNoGpsFit(file: string) {
+  const t0 = new Date(2026, 8, 1, 8, 0, 0);
+  const enc = new Encoder();
+  enc.writeMesg({ mesgNum: Profile.MesgNum.FILE_ID, type: 'activity', manufacturer: 'garmin', product: 0, timeCreated: t0 });
+  for (let i = 0; i <= 60; i++) {
+    enc.writeMesg({ mesgNum: Profile.MesgNum.RECORD, timestamp: new Date(t0.getTime() + i * 1000), heartRate: 120 });
+  }
+  enc.writeMesg({ mesgNum: Profile.MesgNum.SESSION, timestamp: new Date(t0.getTime() + 61_000), startTime: t0, sport: 'cycling', totalElapsedTime: 60 });
+  fs.writeFileSync(file, enc.close());
+}
 
 // Hono 的 app.request 不存在于 Feathers/Express：起真实 HTTP 端口发请求
 // （redirect: manual 保持不跳转语义；断言语义与原 app.request 一致）
@@ -77,11 +91,11 @@ const mkApp = ({ inbox = null } = {}) => {
   return { app: createApp({ queue: queue as unknown as QueueLike, configRef, inbox }), queue, configRef, fitLib };
 };
 
-test('GET / 健康信息', async () => {
+test('GET /：落地页重定向到 /dash', async () => {
   const { app } = mkApp();
   const r = await request(app, '/');
-  assert.equal(r.status, 200);
-  assert.equal(((await r.json()) as { name: string }).name, 'actpipe');
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get('location'), '/dash');
 });
 
 test('POST /jobs：视频不存在 400，存在则 201 入队', async () => {
@@ -158,10 +172,46 @@ test('GET /api/fits：库内 FIT 按开始时间倒序', async () => {
   fs.copyFileSync(FIT, path.join(fitLib, 'a.fit'));
   const r = await request(app, '/api/fits');
   assert.equal(r.status, 200);
-  const fits = (await r.json()) as { start_ms: number; sport: string }[];
+  const fits = (await r.json()) as { start_ms: number; sport: string; distance_m: number | null; has_gps: boolean }[];
   assert.equal(fits.length, 1);
   assert.equal(fits[0].start_ms, Date.parse('2026-09-06T02:00:00.000Z'));
   assert.equal(fits[0].sport, 'cycling');
+  assert.equal(fits[0].distance_m, 5400);
+  assert.equal(fits[0].has_gps, true);
+});
+
+test('GET /api/fits/track/:name：GPS 轨迹抽稀到 ≤240 个 [lat,lon] 点', async () => {
+  const { app, fitLib } = mkApp();
+  fs.copyFileSync(FIT, path.join(fitLib, 'ride.fit'));
+  const r = await request(app, '/api/fits/track/ride.fit');
+  assert.equal(r.status, 200);
+  const { points } = (await r.json()) as { points: [number, number][] };
+  assert.ok(points.length > 2 && points.length <= 240, `points=${points.length}`);
+  // fixture 是绕 (31.23, 121.47) 的圆轨迹
+  for (const [lat, lon] of points) {
+    assert.ok(Math.abs(lat - 31.23) < 0.01 && Math.abs(lon - 121.47) < 0.01);
+  }
+});
+
+test('GET /api/fits/track/:name：无 GPS → 空点；缺文件/路径穿越 404', async () => {
+  const { app, fitLib } = mkApp();
+  makeNoGpsFit(path.join(fitLib, 'indoor.fit'));
+  const indoor = await request(app, '/api/fits/track/indoor.fit');
+  assert.equal(indoor.status, 200);
+  assert.deepEqual(await indoor.json(), { points: [] });
+  assert.equal((await request(app, '/api/fits/track/ghost.fit')).status, 404);
+  assert.equal((await request(app, '/api/fits/track/..%2F..%2Fpackage.json')).status, 404);
+});
+
+test('GET /api/fits/file/:name：原始 .fit 附件下载；缺文件 404', async () => {
+  const { app, fitLib } = mkApp();
+  fs.copyFileSync(FIT, path.join(fitLib, 'ride.fit'));
+  const r = await request(app, '/api/fits/file/ride.fit');
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-disposition') ?? '', /attachment/);
+  const buf = Buffer.from(await r.arrayBuffer());
+  assert.equal(buf.length, fs.statSync(FIT).size);
+  assert.equal((await request(app, '/api/fits/file/ghost.fit')).status, 404);
 });
 
 test('inbox 未启用：相关路由统一 503', async () => {

@@ -4,7 +4,7 @@
   }
   let { current = 'dash' }: Props = $props();
 
-  const names: Record<string, string> = { dash: '总控台', inbox: '素材库', studio: '对齐工作室' };
+  const names: Record<string, string> = { dash: '总控台', inbox: '素材库', fits: 'FIT 库', studio: '对齐工作室' };
 </script>
 
 <nav class="appnav">
@@ -15,6 +15,7 @@
   </div>
   <div class="tabs">
     <a class="tab" class:on={current === 'inbox'} href="/inbox">素材库</a>
+    <a class="tab" class:on={current === 'fits'} href="/fits">FIT 库</a>
     <a class="tab" class:on={current === 'dash'} href="/dash">总控台</a>
   </div>
   <div class="right"><slot /></div>
@@ -30,7 +31,7 @@
     align-items: center;
     gap: 20px;
     padding: 0 24px;
-    background: color-mix(in srgb, var(--bg-0) 82%, transparent);
+    background: rgba(255, 255, 255, .78);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
     border-bottom: 1px solid var(--line);

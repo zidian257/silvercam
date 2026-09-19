@@ -505,7 +505,7 @@
     background: var(--bg-1);
     border-bottom: 1px solid var(--line);
   }
-  .banner.err { color: var(--danger); background: rgba(242, 85, 90, .1); border-bottom-color: rgba(242, 85, 90, .25); }
+  .banner.err { color: var(--danger); background: rgba(214, 69, 69, .08); border-bottom-color: rgba(214, 69, 69, .25); }
   main { padding: 24px; max-width: 1100px; margin: 0 auto; }
   .stageWrap {
     position: relative;

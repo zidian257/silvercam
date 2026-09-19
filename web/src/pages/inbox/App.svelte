@@ -467,8 +467,8 @@
   .err { color: var(--danger); font-size: 11px; }
   .skincell { font-size: 12px; color: var(--text-2); }
   .st { border-radius: var(--r-pill); padding: 2px 10px; font-size: 11px; font-weight: 600; white-space: nowrap; }
-  .st.queued, .st.awaiting_fit { background: rgba(229, 165, 10, .12); color: var(--warn); }
+  .st.queued, .st.awaiting_fit { background: rgba(201, 138, 4, .12); color: var(--warn); }
   .st.ingesting, .st.probing, .st.rendering, .st.encoding, .st.copying { background: var(--accent-soft); color: var(--accent); }
-  .st.done { background: rgba(63, 185, 80, .12); color: var(--ok); }
-  .st.failed { background: rgba(242, 85, 90, .12); color: var(--danger); }
+  .st.done { background: rgba(62, 142, 77, .12); color: var(--ok); }
+  .st.failed { background: rgba(214, 69, 69, .12); color: var(--danger); }
 </style>

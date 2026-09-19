@@ -4,11 +4,11 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { resolveSkinDir, paths, ensureDirs } from '../../lib/paths.ts';
 import { resolveLutPath, listLuts, saveConfig } from '../../lib/config.ts';
-import { parseClipName, parseTimecode, runOk } from '../../lib/util.ts';
+import { parseClipName, parseTimecode, round, runOk } from '../../lib/util.ts';
 import { storeKind } from '../../lib/db.ts';
 import { probeFile, looksDlog } from '../../modules/probe.ts';
 import { listFits, suggestFit } from '../../modules/fitlib.ts';
-import { decodeFit, processRecords, fitToFiles } from '../../modules/fit.ts';
+import { decodeFit, parseFit, processRecords, fitToFiles } from '../../modules/fit.ts';
 import type { ProcessedSamples } from '../../modules/fit.ts';
 import { renderPreviewFrame } from '../../modules/render.ts';
 import { buildSkin, buildSkinHtml } from '../../modules/skin-build.ts';
@@ -360,6 +360,45 @@ export function createMediaRouter({ queue, configRef, inbox, refs, quickcuts = n
   });
 
   router.get('/luts', (req: Request, res: Response) => res.json(listLuts(configRef.current)));
+
+  // ---- FIT 库浏览（fits 页）：轨迹抽稀 + 原始文件下载 ----
+  // 与 feathers /api/fits（find/create）不冲突：该服务未暴露 get，这两个 GET 会落到本路由。
+  const fitLibFile = (req: Request): string | null => {
+    const dir = configRef.current.fit_library_dir ?? paths.fits;
+    const name = path.basename(req.params.name); // 防路径穿越
+    if (!name.toLowerCase().endsWith('.fit')) return null;
+    const file = path.join(dir, name);
+    return fs.existsSync(file) ? file : null;
+  };
+
+  // 轨迹抽稀：≤240 个 [lat,lon] 点（fits 页 SVG 缩略图用）；无 GPS → 空点
+  router.get('/api/fits/track/:name', (req: Request, res: Response) => {
+    const file = fitLibFile(req);
+    if (!file) return res.status(404).json({ error: 'fit not found' });
+    try {
+      const { records } = parseFit(file);
+      const gps = records.filter((r) => r.lat != null && r.lon != null);
+      const MAX = 240;
+      const stride = Math.max(1, Math.ceil(gps.length / MAX));
+      const points = gps
+        .filter((_, i) => i % stride === 0 || i === gps.length - 1)
+        .map((r) => [round(r.lat!, 7), round(r.lon!, 7)]);
+      return res.json({ points });
+    } catch (e) {
+      return res.status(422).json({ error: `FIT 解析失败：${(e as Error).message}` });
+    }
+  });
+
+  // 原始 .fit 附件下载
+  router.get('/api/fits/file/:name', (req: Request, res: Response) => {
+    const file = fitLibFile(req);
+    if (!file) return res.status(404).json({ error: 'fit not found' });
+    const name = path.basename(file);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+    res.setHeader('Content-Length', String(fs.statSync(file).size));
+    fs.createReadStream(file).pipe(res);
+  });
 
   router.get('/skins', (req: Request, res: Response) => {
     ensureDirs();

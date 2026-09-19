@@ -387,3 +387,13 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 **踩坑记录**：① Feathers service 内部禁用 ES `#` 私有方法（`wrapService` 用 `Object.create` 包装后私有品牌丢失，500）——用 TS `private`；② pi `AgentTool.execute` 返回值 `details` 必填；③ pi-ai `models.complete` 失败不 reject（查 `stopReason:'error'/'aborted'` + errorMessage），llm_test 必须检查；④ openai-completions 适配器强制 apiKey——keyless 本地端点由 llm.ts 补占位 key `actpipe-keyless`。
 
 ~~（2026-09-15 初版 L1 是写死六幕叙事的硬编码 agent：sample_frames/commit_cuts 工具 + 时长锁定只许平移。本次重构把叙事挪进 SKILL.md——lesson：agent 的工作流应该住在 skill 文件里可迭代，代码里只留工具与护栏。）~~
+
+## FIT 库页（2026-09-19 落地）
+
+第四个页面 `/fits`：FIT 库的可见列表（此前只有 inbox 下拉能碰到 FIT）。卡片流按开始时间倒序（最新在顶），每卡：GPS 轨迹 SVG 缩略图（无 GPS 显示运动图标）、文件名、日期（星期/上午下午）、时长 · 距离 · sport 图标、来源 pill（文件名带 Strava 活动号尾巴 →「Strava」，否则「本地」）、原始 .fit 下载。顶栏：上传 .fit 入库 + Strava 状态与「立即同步」。
+
+配套接口：`GET /api/fits/track/:name`（轨迹抽稀 ≤240 个 [lat,lon] 点，无 GPS 空点）、`GET /api/fits/file/:name`（附件下载）；`listFits` 每项附 `distance_m`（最后一条 record 的 distance）与 `has_gps`，旧形态磁盘缓存自动重解析补全。前端投影（`web/src/lib/track.ts`）与皮肤侧 `projectTrack` 算法同源、独立实现（皮肤构建链不反向依赖 web/src）。
+
+## 浅色设计语言（2026-09-19 落地）
+
+全站从深色底换为浅色「户外手记」：纸白页面底（`--bg-0: #F4F5F2`，带一丝绿灰）、白卡片、军绿主色（`--accent: #3E6B34`）、状态色浅底可读版（ok `#3E8E4D` / warn `#C98A04` / danger `#D64545`）、分隔线改用深色低透明度。只改 `web/src/lib/ui.css` 一处 token 即全站换肤（组件全部引用 token）；登录页（auth.ts 内联模板）同步浅色。不动项：`dashboards/` 六套视频 overlay 皮肤（独立视觉体系）、studio 舞台的视频衬底 `#000`（视频预览惯例）。

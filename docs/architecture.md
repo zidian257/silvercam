@@ -77,10 +77,10 @@ actpipe/
 │   ├── lib/  modules/             # 纯工具与流水线模块（不变，补测试）
 ├── web/
 │   ├── src/                       # Svelte 5 源码
-│   │   ├── pages/dash|inbox|studio/{index.html, main.js, App.svelte}
+│   │   ├── pages/dash|inbox|studio|fits/{index.html, main.js, App.svelte}
 │   │   ├── lib/api.js             # fetch 封装（401 跳登录）
-│   │   ├── lib/{format,dash,inbox,studio,lutgl}.js   # 纯逻辑（vitest 直测）
-│   │   └── lib/components/        # StatCards/JobsTable/PendingGroup/SeekBar/Thumb 等
+│   │   ├── lib/{format,dash,inbox,studio,fits-model,track,lutgl}.js   # 纯逻辑（vitest 直测）
+│   │   └── lib/components/        # StatCards/JobsTable/PendingGroup/SeekBar/Thumb/FitTrack 等
 │   └── dist/                      # vite 构建产物（server /app/* 静态伺服；缺失时 503 提示构建）
 │   （登录页不走 Svelte：auth.js 内联 HTML，豁免路由不依赖构建产物）
 ├── dashboards/                    # 皮肤：每套一个目录，单个 Skin.svelte + 平铺 woff2
@@ -96,7 +96,7 @@ actpipe/
 
 关键决策：
 
-- **Svelte MPA 而非 SPA**：三个页面功能独立，无跨页状态；MPA 入口各自打包，
+- **Svelte MPA 而非 SPA**：四个页面功能独立，无跨页状态；MPA 入口各自打包，
   首屏只带自己的代码，server 路由逐个切换到构建产物。
 - **node:test 而非 jest**：Node 22 内置，零依赖；前端组件用 Vitest（与 Vite 同生态）。
 - **鉴权用「密码 + httpOnly 签名 cookie」**：单用户场景的最小充分方案；

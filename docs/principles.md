@@ -185,7 +185,7 @@ FIT 文件入库。触发点是插卡（不轮询）——插卡时活动一般�
 
 ## 10. 前端工程
 
-- **Svelte 5 MPA**（不是 SPA）：dash/inbox/studio 三个页面功能完全独立，无跨页
+- **Svelte 5 MPA**（不是 SPA）：dash/inbox/studio/fits 四个页面功能完全独立，无跨页
   状态；各自打包，首屏只带自己的代码（`vite.config.js` 多入口，产物在
   `web/dist`，server 以 `/app/` 前缀伺服）。
 - **TDD**：领域逻辑全部抽成纯函数（`web/src/lib/*.js`）用 Vitest 测；

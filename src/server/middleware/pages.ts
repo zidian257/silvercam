@@ -10,7 +10,7 @@ const ASSET_MIME: Record<string, string> = {
   '.woff': 'font/woff', '.woff2': 'font/woff2', '.json': 'application/json',
 };
 
-// 页面路由：/ 重定向到 dash + 三个页面（Svelte 构建产物）+ 皮肤静态资源（状态接口在 /api/status）
+// 页面路由：/ 重定向到 dash + 四个页面（Svelte 构建产物）+ 皮肤静态资源（状态接口在 /api/status）
 const WEB_DIST = path.join(REPO_ROOT, 'web', 'dist');
 const servePage = (name: string) => (req: Request, res: Response) => {
   const file = path.join(WEB_DIST, 'pages', name, 'index.html');
@@ -31,6 +31,7 @@ export function createPagesRouter() {
     res.redirect(`/studio${q}`);
   });
   router.get('/inbox', servePage('inbox'));
+  router.get('/fits', servePage('fits'));
   router.get('/dash', servePage('dash'));
 
   // Svelte 皮肤编译产物（entry.js/entry.css/字体，按内容哈希分目录，见 modules/skin-build.js）

@@ -66,16 +66,17 @@ const LOGIN_PAGE = `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>actpipe — 登录</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: light; }
   body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-         font: 14px/1.5 -apple-system, "PingFang SC", sans-serif; background: #14161a; color: #e8e8e8; }
-  .box { background: #1d2026; border: 1px solid #2c313a; border-radius: 12px; padding: 28px 32px; width: 300px; }
+         font: 14px/1.5 -apple-system, "PingFang SC", sans-serif; background: #F4F5F2; color: #191C17; }
+  .box { background: #ffffff; border: 1px solid #E3E6E0; border-radius: 12px; padding: 28px 32px; width: 300px;
+         box-shadow: 0 8px 24px rgba(25, 28, 23, .08); }
   h1 { font-size: 17px; margin: 0 0 4px; }
-  .sub { color: #8b95a5; font-size: 12px; margin-bottom: 18px; }
-  input { width: 100%; box-sizing: border-box; background: #0f1114; color: #e8e8e8; border: 1px solid #3a404c;
+  .sub { color: #5B6258; font-size: 12px; margin-bottom: 18px; }
+  input { width: 100%; box-sizing: border-box; background: #ffffff; color: #191C17; border: 1px solid #C9CEC5;
           border-radius: 8px; padding: 9px 12px; font: inherit; margin-bottom: 12px; }
-  button { width: 100%; background: #2f6fed; color: #fff; border: 0; border-radius: 8px; padding: 9px; font: inherit; cursor: pointer; }
-  .err { color: #ff7b72; font-size: 12px; min-height: 16px; margin-bottom: 6px; }
+  button { width: 100%; background: #3E6B34; color: #fff; border: 0; border-radius: 8px; padding: 9px; font: inherit; cursor: pointer; }
+  .err { color: #D64545; font-size: 12px; min-height: 16px; margin-bottom: 6px; }
 </style></head>
 <body><form class="box" id="f">
   <h1>actpipe</h1>

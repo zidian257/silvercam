@@ -15,12 +15,16 @@ export interface FitLibEntry {
   end_ms: number;
   duration_s: number;
   sport: string | null;
+  distance_m: number | null; // 最后一条 record 的 distance（无该字段则 null）
+  has_gps: boolean; // 是否存在 position 记录（fits 页决定是否渲染轨迹缩略图）
 }
 
 interface FitlibCacheEntry {
   start_ms: number;
   end_ms: number;
   sport: string | null;
+  distance_m: number | null;
+  has_gps: boolean;
 }
 
 let memCache: { dir: string; sig: string; fits: FitLibEntry[] } | null = null;
@@ -48,10 +52,21 @@ export function listFits(cfg: ActpipeConfig): FitLibEntry[] {
   for (const [p, s] of stats) {
     const key = `${p}:${s.mtime}:${s.size}`;
     let e = disk[key];
-    if (!e) {
+    if (!e || e.distance_m === undefined || e.has_gps === undefined) {
+      // 旧形态缓存（无 distance_m/has_gps 字段）判失效，重解析补全
       try {
         const { records, session } = parseFit(p);
-        e = { start_ms: records[0].t, end_ms: records[records.length - 1].t, sport: session?.sport ?? null };
+        let distance_m: number | null = null;
+        for (let i = records.length - 1; i >= 0; i--) {
+          if (records[i].distance != null) { distance_m = records[i].distance; break; }
+        }
+        e = {
+          start_ms: records[0].t,
+          end_ms: records[records.length - 1].t,
+          sport: session?.sport ?? null,
+          distance_m,
+          has_gps: records.some((r) => r.lat != null && r.lon != null),
+        };
         disk[key] = e;
         dirty = true;
       } catch {
@@ -65,6 +80,8 @@ export function listFits(cfg: ActpipeConfig): FitLibEntry[] {
       end_ms: e.end_ms,
       duration_s: Math.round((e.end_ms - e.start_ms) / 1000),
       sport: e.sport,
+      distance_m: e.distance_m,
+      has_gps: e.has_gps,
     });
   }
   if (dirty) writeJsonAtomic(diskCacheFile(), disk);

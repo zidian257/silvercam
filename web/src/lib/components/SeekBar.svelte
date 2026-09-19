@@ -48,7 +48,7 @@
     top: 7px;
     height: 6px;
     border-radius: 3px;
-    background: rgba(76, 141, 255, .35);
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
   }
   .seekFill {
     position: absolute;
@@ -65,7 +65,7 @@
     height: 12px;
     border-radius: 50%;
     background: #fff;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, .6);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
     transform: translateX(-6px);
     opacity: 0;
     transition: opacity 120ms;

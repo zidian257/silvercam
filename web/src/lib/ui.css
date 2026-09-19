@@ -1,4 +1,4 @@
-/* actpipe 设计令牌与全局控件 —— 三个工作台共用 */
+/* actpipe 设计令牌与全局控件 —— 四个页面共用 */
 @font-face {
   font-family: 'Space Grotesk';
   src: url('../assets/fonts/SpaceGrotesk-500.woff2') format('woff2');
@@ -15,24 +15,24 @@
 }
 
 :root {
-  --bg-0: #0B0D10;
-  --bg-1: #12151B;
-  --bg-2: #1A1E27;
-  --line: rgba(255, 255, 255, .07);
-  --line-strong: rgba(255, 255, 255, .13);
-  --text-1: #E9EBF0;
-  --text-2: #9BA3B2;
-  --text-3: #5D6472;
-  --accent: #4C8DFF;
-  --accent-soft: rgba(76, 141, 255, .14);
-  --ok: #3FB950;
-  --warn: #E5A50A;
-  --danger: #F2555A;
+  --bg-0: #F4F5F2;
+  --bg-1: #FFFFFF;
+  --bg-2: #ECEEE9;
+  --line: rgba(25, 28, 23, .08);
+  --line-strong: rgba(25, 28, 23, .14);
+  --text-1: #191C17;
+  --text-2: #5B6258;
+  --text-3: #99A093;
+  --accent: #3E6B34;
+  --accent-soft: rgba(62, 107, 52, .10);
+  --ok: #3E8E4D;
+  --warn: #C98A04;
+  --danger: #D64545;
   --r-card: 10px;
   --r-ctl: 8px;
   --r-pill: 999px;
-  --shadow-pop: 0 8px 24px rgba(0, 0, 0, .45);
-  color-scheme: dark;
+  --shadow-pop: 0 8px 24px rgba(25, 28, 23, .12);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -83,9 +83,9 @@ a:hover { filter: brightness(1.2); }
   font-weight: 600;
   white-space: nowrap;
 }
-.pill.ok { background: rgba(63, 185, 80, .12); color: var(--ok); }
-.pill.warn { background: rgba(229, 165, 10, .12); color: var(--warn); }
-.pill.danger { background: rgba(242, 85, 90, .12); color: var(--danger); }
+.pill.ok { background: rgba(62, 142, 77, .12); color: var(--ok); }
+.pill.warn { background: rgba(201, 138, 4, .12); color: var(--warn); }
+.pill.danger { background: rgba(214, 69, 69, .12); color: var(--danger); }
 .pill.info { background: var(--accent-soft); color: var(--accent); }
 .pill.mute { background: var(--bg-2); color: var(--text-3); }
 
@@ -107,7 +107,7 @@ select {
   font: inherit;
   font-size: 13px;
   cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239BA3B2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235B6258' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 10px center;
   transition: border-color 150ms;
