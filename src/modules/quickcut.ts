@@ -330,7 +330,7 @@ export function detectEvents(
 const AUDIO_BUCKET_S = 5; // 聚合桶宽（秒）
 const AUDIO_TALK_DB = -25; // 响度阈值：DJI 风噪抑制下骑行基线远低于此，近场人声显著高于此
 const AUDIO_TALK_MIN_BUCKETS = 3; // 至少 ~15s 持续响亮才算「有人声」，过路噪声/一声快门不触发
-const AUDIO_SCAN_CAP_S = 240; // 单个停顿最多扫的时长（音频解码 ~5x 实时，长停顿兜个上限）
+const AUDIO_SCAN_CAP_S = 600; // 单个停顿最多扫的时长（-vn 只解音频，600s ≈ 5s；上限只为防病态素材，别截断真实人声区——beat 取人声区收尾，截断会认错结尾）
 
 // 单次 ffmpeg astats 全窗扫描 → 5s 桶能量均值（dB 转线性能量求均值再转回）
 export async function scanPauseAudio(video: string, fromS: number, toS: number): Promise<PauseAudioInfo> {

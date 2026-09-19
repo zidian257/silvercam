@@ -209,7 +209,8 @@ function hardStepsDigest(events: QuickcutEvent[]): string {
       lines.push(`- ${e.type === 'head' ? '片头' : '片尾'}区间 ${e.fromVideoS.toFixed(0)}–${e.toVideoS.toFixed(0)}s：先在 ${probes(e.fromVideoS, e.toVideoS)}s 四处抽帧探索，再定${e.type === 'head' ? '开头' : '收尾'}窗口`);
     }
     if (e.type === 'pause' && e.audio?.talk && e.audio.fromS != null && e.audio.toS != null) {
-      lines.push(`- 停顿有人声（${e.audio.fromS.toFixed(0)}–${e.audio.toS.toFixed(0)}s）：在区间内抽帧，取一处 ≤6s 的对话 beat（画面实在不可用才放弃，提交时写明原因）`);
+      const beatFrom = Math.max(e.audio.fromS, e.audio.toS - 6);
+      lines.push(`- 停顿有人声（${e.audio.fromS.toFixed(0)}–${e.audio.toS.toFixed(0)}s）：对话 beat 取人声区收尾——在 ${beatFrom.toFixed(0)}–${e.audio.toS.toFixed(0)}s 附近抽帧微调，取 ≤6s（告别/笑声/重新上车的情绪落点；画面实在不可用才放弃，提交时写明原因）`);
     }
   }
   return lines.length ? `\n# 本片硬步骤（skill「两步硬流程」逐条落实）\n${lines.join('\n')}\n` : '';

@@ -141,7 +141,7 @@ test('refineActsWithAgent: user prompt 带本片硬步骤（长片头探测点 +
   });
   assert.match(userPrompt, /本片硬步骤/);
   assert.match(userPrompt, /片头区间 0–134s：先在 13\/40\/80\/121s/);
-  assert.match(userPrompt, /停顿有人声（1545–1675s）：在区间内抽帧，取一处 ≤6s/);
+  assert.match(userPrompt, /停顿有人声（1545–1675s）：对话 beat 取人声区收尾——在 1669–1675s 附近抽帧微调，取 ≤6s/);
   assert.ok(!userPrompt.includes('2290–2319'), '安静停顿不进硬步骤');
 });
 
