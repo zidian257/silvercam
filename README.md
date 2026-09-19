@@ -4,6 +4,8 @@
 自动完成「选 .fit → 仪表盘叠加 → 出片 → 系统通知」。
 常驻 server（Node 22 + FeathersJS/Express + socket.io + ws，pm2 托管）+ 瘦 CLI（bun 编译单文件）+ ffmpeg 合成。
 
+待办清单见 [TODO.md](TODO.md)（有新待办就追加一条）。
+
 ## 安装
 
 ```bash
