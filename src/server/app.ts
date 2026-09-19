@@ -65,6 +65,10 @@ export function createApp({ queue, configRef, inbox = null, refs = {} }: { queue
   const app = (feathersExpress as unknown as FeathersExpressFactory)(feathers());
   const ctx: AppContext = { queue, configRef, inbox, refs };
 
+  // 隧道/反代后面要信 X-Forwarded-Proto：Strava OAuth 的 redirect_uri 用 req.protocol 拼，
+  // 不信任则 cloudflared TLS 终止后回跳地址会错算成 http
+  app.set('trust proxy', true);
+
   const auth = createAuth({ configRef, dataDir: paths.home });
   app.set('auth', auth); // index.js 取去用于 upgrade 分发前的鉴权判定
 

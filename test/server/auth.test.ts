@@ -85,7 +85,7 @@ test('登录流程：错误密码 401，正确密码签发 cookie，携 cookie �
   const cookie = ok.headers.get('set-cookie')!;
   assert.match(cookie, /actpipe_session=/);
   assert.match(cookie, /HttpOnly/);
-  assert.match(cookie, /SameSite=Strict/);
+  assert.match(cookie, /SameSite=Lax/); // OAuth 回跳（顶级 GET 导航）需要携带会话
   const r = await request(app, '/dash', { headers: { cookie: cookie.split(';')[0] } });
   assert.equal(r.status, 200);
 });

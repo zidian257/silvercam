@@ -9,7 +9,8 @@ import type { ConfigRef } from './services/config.ts';
 // 设计要点：
 // - 密码只存 scrypt 哈希（config.auth.password_hash），不明文不落日志；
 // - 会话令牌 = base64url(exp).hmac(secret)，无状态；secret 持久化在数据目录（0600），重启不失效；
-// - cookie HttpOnly + SameSite=Strict：JS 读不到、跨站不携带（天然防 CSRF）；
+// - cookie HttpOnly + SameSite=Lax：JS 读不到；跨站写请求不携带（防 CSRF），
+//   但顶级 GET 跳转携带——OAuth 回跳（Strava → /api/strava/callback）靠它才能带着会话回来；
 // - 本机 CLI 用数据目录里的 cli-token（0600）走 X-Actpipe-Token 头直通；
 // - 未配置密码 = 鉴权关闭（本地默认体验不变）；`actpipe passwd <pw>` 开启。
 // middleware/authorized 只用原生 req/res API（writeHead/end/headers），
@@ -153,11 +154,11 @@ export function createAuth({ configRef, dataDir }: { configRef: ConfigRef; dataD
       if (!verifyPassword(body.password, configRef.current.auth.password_hash)) {
         return res.status(401).json({ error: '密码错误' });
       }
-      res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(signToken(secret))}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${30 * 86400}`);
+      res.setHeader('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(signToken(secret))}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}`);
       return res.json({ ok: true });
     });
     app.post('/api/logout', (req, res) => {
-      res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
+      res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
       return res.json({ ok: true });
     });
   }
