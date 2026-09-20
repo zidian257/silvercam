@@ -48,7 +48,9 @@
 ### 8. 背景音乐床（Casey Neistat 范儿）（2026-09-19，2026-09-20 深化调研）
 
 - **产品**：Casey 的味道 = 有品位的授权曲 + 音乐永远垫在人声/环境声下面。曲风考证：早期大量用 Joakim Karud 这类「署名即可用」的独立 lo-fi/funk instrumental（368 时期常用 AllttA）——共性是**有鼓点律动、有钢琴/吉他 loop、无人声抢戏**。我们不做内置曲库（版权红线），做「用户自带曲库 + 自动混音」。
-- **曲库来源（用户自备，2026 价格）**：Epidemic Sound（$15/月档，4 万+ 曲、带 stems，YouTuber 行业标准）/ Artlist（$199/年，订阅期内发布的视频终身有效）/ Musicbed（电影感，偏贵）/ 免费档 YouTube Audio Library、Uppbeat。注意平台差异：Epidemic/Artlist 授权主打 YouTube Content ID 场景；B 站无 Content ID 体系、风险低；**视频号有自己的版权曲库检测，第三方授权曲可能被误判——首发前用一条片子实测**。
+- **曲库来源（用户自备，零订阅路线，2026-09-20 更新）**：用户明确不订阅曲库。四条路（推荐序）：① Joakim Karud / Kevin MacLeod 等 CC-BY 独立音乐人（Casey 原版声音，免费，仅要求简介署名）；② Pixabay Music（免署名）/ Uppbeat 免费档 / Free Music Archive（筛 CC0/CC-BY）；③ AudioJungle 单曲买断 ~$20/首终身（十几首一次买齐，比订阅便宜一个数量级）；④ 本地 AI 生成（MusicGen，Mac 可跑，lo-fi instrumental 舒适区；权重非商用授权，自用 vlog OK）。**产品判断：重复用一小撮真爱曲是特性不是妥协（Casey 的签名感就是这么来的），20 首够吃几年。**
+- **署名自动化（关键设计）**：系统记录每条成片所用曲目，上传（TODO #9）时自动把 CC-BY 署名行写进视频简介——CC-BY 的唯一义务被自动化，用户零负担。
+- （原订阅方案备查：Epidemic Sound $15/月、Artlist $199/年终身有效；视频号自有版权检测可能误判第三方授权曲，首发前实测。）
 - **混音技术链（ffmpeg 全可做）**：`sidechaincompress` 以原声为 sidechain 源压 BGM（讲话自动压低，threshold/ratio/release 有社区成熟参数）；`amix=duration=first` 合流；BGM 侧 EQ 衰 1–4kHz 中频让人声更清晰；成品 `loudnorm` 双 pass 到 **-14 LUFS**（YouTube 归一化标准，避免上传后被平台二次压响度）。
 - **产品形态**：`config.music_dirs` 曲库目录 + 曲目打 energy/mood 标签（目录名或 sidecar json 即可，不上数据库）；选曲入口挂 inbox/快剪面板；默认 BGM 电平进 config（如 -18 dB 起步）。
 - **二期想象力**：beat 检测（aubio/essentia onset）让快剪剪辑点卡鼓点；**数据驱动选曲**——FIT 能量曲线（速度/强度分段）匹配曲目的 energy 标签，爬坡段自动切高能曲。
