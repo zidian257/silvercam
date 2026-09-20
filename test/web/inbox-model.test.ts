@@ -114,6 +114,15 @@ describe('mergeGroupsNow / buildDecisions / commitSummary', () => {
     const sk = buildDecisions([selVal()], 'skip');
     expect(sk).toEqual([{ id: '1', action: 'skip' }, { id: '2', action: 'skip' }]);
   });
+  it('buildDecisions: 音量/快剪覆盖随决策带出；音量默认档（空串）省略该键', () => {
+    const d = buildDecisions([selVal({ volume: '0.5', quickcut: true, memberIds: ['7'] })], 'process');
+    expect(d[0]).toEqual({ id: '7', action: 'process', skin: 'topline', lut: null, fit: '/fits/a.fit', audio_volume: 0.5, quickcut: true });
+    const def = buildDecisions([selVal({ volume: '', quickcut: false, memberIds: ['8'] })], 'process');
+    expect(def[0]).toEqual({ id: '8', action: 'process', skin: 'topline', lut: null, fit: '/fits/a.fit', quickcut: false });
+    expect('audio_volume' in def[0]).toBe(false);
+    const mute = buildDecisions([selVal({ volume: '0', memberIds: ['9'] })], 'process');
+    expect(mute[0].audio_volume).toBe(0); // 静音是显式选择，不能被 '' 判空吞掉
+  });
   it('commitSummary: 入队/跳过/失败计数合成文案', () => {
     const s = commitSummary({ results: [
       { id: '1', job_id: 'j1' }, { id: '2', job_id: 'j1', merged: 2 }, { id: '3', skipped: true }, { id: '4', error: 'boom' },

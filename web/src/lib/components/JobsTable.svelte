@@ -2,6 +2,7 @@
   import { FileText, Scissors, SlidersHorizontal } from 'lucide-svelte';
   import { fmtAgo } from '../format.ts';
   import QuickcutPanel from './QuickcutPanel.svelte';
+  import { latestForJob, stateShort, statePill } from '../quickcut.ts';
   import type { QuickcutRecord } from '../quickcut.ts';
   import type { LlmStatus } from '../llm.ts';
   import type { ProgressPayload } from '../../../../src/types.ts';
@@ -17,6 +18,7 @@
     skin?: string | null;
     fit?: boolean;
     bias_seconds?: number | null;
+    quickcut?: boolean; // 出片后自动快剪（服务端按 params.quickcut ?? config.quickcut_auto 判定）
     progress?: ProgressPayload | null;
     error?: string | null;
     output?: string | null;
@@ -72,6 +74,7 @@
     <tbody>
       {#each jobs as j (j.id)}
         {@const pct = pctOf(j)}
+        {@const qc = latestForJob(quickcuts, j.id)}
         <tr>
           <td class="jid">{j.id}</td>
           <td class="vcell">
@@ -80,6 +83,11 @@
               {#if j.segments > 1}<span class="pill info" title="同一次录制的 {j.segments} 个切段合并输出为一条">合并×{j.segments}</span>{/if}
               {#if j.bias_seconds != null && j.bias_seconds !== 0}
                 <span class="pill mute" title="时间轴整体平移（正 = 数据延后）">bias {j.bias_seconds > 0 ? '+' : ''}{j.bias_seconds}s</span>
+              {/if}
+              {#if qc}
+                <button type="button" class="pill qcstate {statePill(qc.state)}" title="快剪记录：点击查看/继续微调" onclick={() => onToggleQuickcut(j.id)}>快剪·{stateShort(qc.state)}</button>
+              {:else if j.quickcut}
+                <span class="pill info" title="出片后自动快剪">快剪</span>
               {/if}
             </div>
             {#if j.error}<div class="err">{j.error}</div>{/if}
@@ -142,6 +150,7 @@
     white-space: nowrap;
   }
   .err { color: var(--danger); font-size: 11px; margin-top: 2px; }
+  .qcstate { border: none; font: inherit; font-size: 11px; cursor: pointer; }
   .skin { font-size: 12px; color: var(--text-2); white-space: nowrap; }
   .state { white-space: nowrap; }
   .pulse {

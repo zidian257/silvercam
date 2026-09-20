@@ -42,6 +42,8 @@ export interface InboxDecision {
   lut: string | null;
   fit: string | null;
   bias_seconds: number | null;
+  audio_volume?: number | null; // 成片音量倍率覆盖（null/缺省 = 跟随全局 audio_volume）
+  quickcut?: boolean | null; // 出片后自动快剪（null/缺省 = 跟随全局 quickcut_auto）
 }
 
 export interface InboxItem {
@@ -57,7 +59,7 @@ export interface InboxItem {
   status: string; // pending | approved | skipped
   decision: InboxDecision | null;
   job_id: string | null;
-  pre_align?: { fit: string | null; bias_seconds: number | null };
+  pre_align?: { fit: string | null; bias_seconds: number | null; skin?: string | null; lut?: string | null };
 }
 
 // list() 输出 = 条目 + 派生展示字段（src_exists / 拍摄时间 / FIT 预选）
@@ -324,12 +326,18 @@ export class Inbox extends EventEmitter {
     };
   }
 
-  // 对齐页保存的预校准：{ fit, bias_seconds }；提交时若所选 FIT 与此一致则随任务入队
-  setAlign(id: string, { fit, bias_seconds }: { fit: string | null; bias_seconds: number | null }) {
+  // 对齐页保存的预校准；merge 语义：只写 patch 里出现的键（studio 分通道回写——
+  // fit/bias_seconds 来自定格保存，skin/lut 来自预览选择，两路互不覆盖）。
+  // 提交时若所选 FIT 与 pre_align.fit 一致则 bias 随任务入队；skin/lut 作 inbox 页预填
+  setAlign(id: string, patch: { fit?: string | null; bias_seconds?: number | null; skin?: string | null; lut?: string | null }) {
     const item = this.get(id);
     if (!item) throw new Error(`inbox item not found: ${id}`);
     if (item.status !== 'pending') throw new Error(`素材状态为 ${item.status}，不能对齐`);
-    item.pre_align = { fit, bias_seconds };
+    const cur = (item.pre_align ??= { fit: null, bias_seconds: null });
+    if ('fit' in patch) cur.fit = patch.fit ?? null;
+    if ('bias_seconds' in patch) cur.bias_seconds = patch.bias_seconds ?? null;
+    if ('skin' in patch) cur.skin = patch.skin ?? null;
+    if ('lut' in patch) cur.lut = patch.lut ?? null;
     this.#changed(item);
     return item;
   }
@@ -366,7 +374,14 @@ export class Inbox extends EventEmitter {
       throw new Error(item.staged ? 'staging 副本已丢失' : '卡已拔出或文件被移除，无法处理');
     }
     item.status = 'approved';
-    item.decision = { skin: decision.skin ?? null, lut: decision.lut ?? null, fit: decision.fit ?? null, bias_seconds: decision.bias_seconds ?? null };
+    item.decision = {
+      skin: decision.skin ?? null,
+      lut: decision.lut ?? null,
+      fit: decision.fit ?? null,
+      bias_seconds: decision.bias_seconds ?? null,
+      audio_volume: decision.audio_volume ?? null,
+      quickcut: decision.quickcut ?? null,
+    };
     this.#changed(item);
     return item;
   }

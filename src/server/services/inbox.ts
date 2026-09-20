@@ -41,20 +41,37 @@ export class InboxService {
     }
   }
 
-  // 素材库条目保存预校准（fit + bias），提交入队时随决策生效；
-  // 同次录制的切段共享同一 FIT，bias 一并传播（合并任务全段用同一 bias）
+  // studio 的回写：fit + bias_seconds（定格保存）或 skin/lut（预览选择），四键至少给一个；
+  // 只校验给了的键。提交入队时 pre_align 随决策生效；
+  // 同次录制的切段共享同一 FIT 与预览偏好，patch 一并传播（合并任务全段用同一 bias）
   async align(data: any, params: Params) {
     this.needInbox();
     const body = data ?? {};
-    if (!body.fit || !fs.existsSync(body.fit)) throw new BadRequest('fit 文件不存在');
-    if (typeof body.bias_seconds !== 'number' || !Number.isFinite(body.bias_seconds)) throw new BadRequest('bias_seconds (number) required');
+    const patch: { fit?: string | null; bias_seconds?: number | null; skin?: string | null; lut?: string | null } = {};
+    if ('fit' in body) {
+      if (body.fit != null && !fs.existsSync(body.fit)) throw new BadRequest('fit 文件不存在');
+      patch.fit = body.fit ?? null;
+    }
+    if ('bias_seconds' in body) {
+      if (typeof body.bias_seconds !== 'number' || !Number.isFinite(body.bias_seconds)) throw new BadRequest('bias_seconds (number) required');
+      patch.bias_seconds = body.bias_seconds;
+    }
+    if ('skin' in body) {
+      if (body.skin != null && typeof body.skin !== 'string') throw new BadRequest('skin 必须是字符串');
+      patch.skin = body.skin ?? null;
+    }
+    if ('lut' in body) {
+      if (body.lut != null && typeof body.lut !== 'string') throw new BadRequest('lut 必须是字符串或 null');
+      patch.lut = body.lut ?? null;
+    }
+    if (!Object.keys(patch).length) throw new BadRequest('fit/bias_seconds/skin/lut 至少给一个');
     try {
       const id = params.route!.__id;
-      const saved = this.inbox.setAlign(id, { fit: body.fit, bias_seconds: body.bias_seconds });
+      const saved = this.inbox.setAlign(id, patch);
       let propagated = 0;
       for (const g2 of this.inbox.recordingGroup(id)) {
         if (g2.id === id || g2.status !== 'pending') continue;
-        this.inbox.setAlign(g2.id, { fit: body.fit, bias_seconds: body.bias_seconds });
+        this.inbox.setAlign(g2.id, patch);
         propagated++;
       }
       return { ...saved, group_propagated: propagated };
@@ -101,11 +118,23 @@ export class InboxService {
     // 对齐页预校准（pre_align）随决策生效：所选 FIT 与校准时一致才带 bias，换了 FIT 则作废
     const biasOf = (item: InboxItem | null, fit: string | null) => (item?.pre_align && item.pre_align.fit === fit ? item.pre_align.bias_seconds : null);
 
+    // 每条可选覆盖：audio_volume（非负有限数）/ quickcut（布尔）；缺省 = 跟随全局配置
+    const extrasOf = (d: any) => {
+      if (d.audio_volume != null && (typeof d.audio_volume !== 'number' || !Number.isFinite(d.audio_volume) || d.audio_volume < 0)) {
+        throw new Error(`audio_volume 必须是非负数字：${d.audio_volume}`);
+      }
+      return {
+        ...(d.audio_volume != null ? { audio_volume: d.audio_volume } : {}),
+        ...(d.quickcut != null ? { quickcut: !!d.quickcut } : {}),
+      };
+    };
+
     const spawnSingle = (d: any) => {
       const fit = d.fit === 'none' ? 'none' : d.fit || null;
       if (fit && fit !== 'none' && !fs.existsSync(fit)) throw new Error(`FIT 文件不存在：${fit}`);
       const bias = biasOf(inbox.get(d.id), fit === 'none' ? null : fit);
-      const item = inbox.approve(d.id, { skin: d.skin || null, lut: d.lut ?? null, fit, bias_seconds: bias });
+      const extras = extrasOf(d);
+      const item = inbox.approve(d.id, { skin: d.skin || null, lut: d.lut ?? null, fit, bias_seconds: bias, ...extras });
       // 预拷贝的用 staging 副本（origin 记账）；默认直接从卡上读，job 的 ingest 步骤负责拷贝
       const preStaged = item.staged && fs.existsSync(item.staged);
       const job = queue.add({
@@ -114,6 +143,7 @@ export class InboxService {
         lut: d.lut ?? null,
         ...(fit ? { fit } : {}),
         ...(bias != null ? { bias_seconds: bias } : {}),
+        ...extras,
         ...(preStaged ? { origin: item.src, origin_size: item.size, origin_mtime: item.mtime_ms } : {}),
       });
       inbox.markJob(d.id, job.id);
@@ -182,6 +212,7 @@ export class InboxService {
         const d0 = members[0].d;
         // 同一次录制的切段共用同一对相机+码表，时钟偏差相同：组内首个非空 bias 传播全组
         const gbias = members.map(({ item }) => biasOf(item, fit)).find((b) => b != null) ?? null;
+        const gextras = extrasOf(d0); // 合并任务一条成片：音量/快剪覆盖取首段（按拍摄时间序）的决策
         const job = queue.add({
           video: segments[0].video,
           segments,
@@ -189,9 +220,10 @@ export class InboxService {
           lut: d0.lut ?? null,
           fit,
           ...(gbias != null ? { bias_seconds: gbias } : {}),
+          ...gextras,
         });
         for (const { d } of members) {
-          inbox.approve(d.id, { skin: d.skin || null, lut: d.lut ?? null, fit, bias_seconds: gbias });
+          inbox.approve(d.id, { skin: d.skin || null, lut: d.lut ?? null, fit, bias_seconds: gbias, ...extrasOf(d) });
           inbox.markJob(d.id, job.id);
           results.push({ id: d.id, job_id: job.id, merged: segments.length });
         }

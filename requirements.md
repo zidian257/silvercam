@@ -306,7 +306,7 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 - 依赖：Node.js 22 LTS + `npm i`（@feathersjs/express/socket.io、ws、playwright、@garmin/fitsdk、chokidar 等，见 package.json）+ `npx playwright install chromium`；ffmpeg 走 Homebrew；
 - **server**：从源码运行（node_modules + Playwright 浏览器本机安装），由 **pm2** 托管：`pm2 start ecosystem.config.cjs`（钉死解释器 `/opt/homebrew/opt/node@22/bin/node`，node_args = `--experimental-sqlite --experimental-strip-types`，防 nvm 升级后复活失败）；`pm2 startup launchd` + `pm2 save` 实现登录自启（pm2 自动生成 LaunchAgent，仍在用户会话内运行，osascript 弹窗/系统通知不受影响）；崩溃自动重启、`pm2 logs/status` 现成，日志同时落 `~/Library/Logs/actpipe/`。**不编译成二进制**：Playwright 需拉起外部 driver 进程与独立浏览器二进制，且仅官方支持 Node 运行时，编译无收益。
 - **client（CLI）**：用 **`bun build --compile`** 打成单文件二进制 `actpipe`（纯 HTTP/WS 瘦客户端，无原生模块，编译干净），放 PATH 随处可用。Bun 的职责边界就到此为止——打包工具，不做运行时。
-- 全部配置集中在 `~/.config/actpipe/`（`config.json`（全局配置：输出目录、默认 LUT、`global_bias_seconds`、`fit_autopick` 等）、`dashboards/`（皮肤目录，Skin.svelte 单文件 + 平铺 woff2）、`luts/`、`jobs.db`），可直接 git 管理、多机同步。
+- 全部配置集中在 `~/.config/actpipe/`（`config.json`（全局配置：输出目录、默认 LUT、`global_bias_seconds`、`fit_autopick`、`audio_volume`（成片音量倍率，inbox 可按录制覆盖）、`quickcut_auto`（出片自动快剪，同可按录制覆盖）等）、`dashboards/`（皮肤目录，Skin.svelte 单文件 + 平铺 woff2）、`luts/`、`jobs.db`），可直接 git 管理、多机同步。
 - **公网映射**：Cloudflare 边缘 TLS 终止 → cloudflared named tunnel（pm2 常驻）→ `http://127.0.0.1:<port>`。前置两件：`actpipe passwd` 开鉴权（唯一闸门）；Strava 侧 Authorization Callback Domain 只填域名（回跳全路径 `https://<域名>/api/strava/callback` 由 server 经 `trust proxy` + X-Forwarded-Proto 动态拼出 https）。
 
 ---
@@ -345,7 +345,7 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 
 **Strava→pregen 自动渲染**：FIT 库（`fit_library_dir` 默认 `~/.config/actpipe/fits`）是唯一挂钩——Strava 同步/手动载入/上传的 .fit 落库即触发 `PregenService`（`src/server/pregen.ts`）串行预生成 PNG 序列（生产规格：`pregen.fps` null = 跟随 `overlay_fps`、`pregen.resolutions`、当前皮肤），任务渲染直接整段 cache HIT。纪律：一次一个、任务队列忙等空闲、swap 风暴过速率制水位门；`pregen.enabled: false` 可整体关闭。
 
-**公网映射前必做**：`node --experimental-strip-types bin/actpipe.ts passwd <密码>`（auth.password_hash 当前为 null，鉴权未启用；设了才开启全站拦截）。
+**公网映射前必做**：`node --experimental-strip-types bin/actpipe.ts passwd <密码>`（auth.password_hash 当前为 null，鉴权未启用；设了才开启全站拦截）。`/api/login` 自带滑动窗口限流：每 IP 60s 内最多 10 次尝试（成功不清窗），超限回 429「尝试过于频繁」；回环地址（127.0.0.1/::1）豁免，公网经 cloudflared 时按 `trust proxy` + X-Forwarded-For 取真实客户端 IP。
 
 ## 快剪（2026-09-15 落地，2026-09-18 重构为 pi skill runner）
 
@@ -357,6 +357,8 @@ CLI 对应（每个子命令即对应模块的独立调试入口，§1.5）：`a
 4. **BYOK**（`src/server/llm.ts`）：`config.llm = { provider, model, api_key, base_url, vision }`；默认 `lmstudio`（本机 `http://127.0.0.1:1234/v1`，帧不出机）；云端支持 openai/moonshot/anthropic/google/deepseek 等。不可达 → `resolveLlm` null → 跳过 L1。dash 有 LLM 设置面板（融合在 Strava 旁）：provider 动态表单 + 免保存直测 + 状态四态点。DeepSeek 推荐 `deepseek-v4-flash-vision-exp`（多模态，pi-ai 目录内置）。
 
 **接口**：Feathers service `quickcuts`（find/get/create/analyze/llm_status/llm_test，后三者走 customMethodBridge）。`POST /quickcuts { job_id, cuts?, use_llm? }`：cuts 缺省 → L0 兜底（use_llm 默认开则进 refining）；cuts 给了（`[{start,end,label?}]`，planFromCuts 干跑校验）→ 外部精剪，跳过 L1。串行通道：`queued→analyzing→[refining]→rendering→done/failed`，记录落 `quickcuts.json`（重启中间态标 failed）。`POST /quickcuts/analyze { job_id }`：只读——事件菜单+兜底计划+video/segments/videoDurationS，不落记录（外部 agent 的入口）。CLI：`actpipe quickcut analyze <job_id>` / `actpipe quickcut render <job_id> [--cuts cuts.json]`（2s 轮询到终态）。**全程日志**：每条记录落 `<home>/quickcuts/<id>.log`（`[HH:MM:SS]` 前缀，开始/L0/L1/渲染/done 全链；L1 经 `Agent.subscribe` 事件流记工具调用与助手文本——`formatAgentEvent`：ffmpeg 命令截 300、commit_cuts 全量、助手文本截 500），出口三个：`GET /quickcuts/:id/log`、CLI `actpipe quickcut logs <id>`、dash 面板「日志」按钮（进行态 2s 轮询跟进）。
+
+**入口除 dash/CLI 外还有 inbox 自动接续**：commit 决策每条可带 `quickcut` 开关（缺省跟随全局 `quickcut_auto: true`，合并任务一条成片取首段决策）；job done 后队列自动建快剪记录（`JobQueue.maybeAutoQuickcut`：无 FIT 纯拷贝不触发、quickcuts 未接线只记日志、入队失败只记日志不炸任务；realign 重渲出的新成片会再触发一次）。完成后独立系统通知（`notify_sound`，点击打开成片）。dash 任务行有「快剪」标记：会自动快剪的任务显示静态 pill，已有记录的显示可点状态 pill（快剪·进行中/完成/失败）。
 
 **Skill**（`skills/quickcut/`，Agent Skills 标准，pi/Claude Code/Kimi Code 通用）：SKILL.md 固化导演流程——analyze 提候选 → 抽帧逐幕验证（路上没人/无遮挡/读数清晰/有速度感，每幕至少看两批）→ overlay 读数与事件 desc 数值交叉校验（对不上 = 时间轴没对齐，停手报告）→ 提交剪辑点 → 验片。两条导演纪律：长无数据头尾（>20s）在区内多点抽帧找交代镜头（取装备/出发/收场），不盲用位置窗口；有人声的停顿全片最多取一处 ≤6s（点到为止，隐私）。时长默认 ~30s、叙事撑得起可到 2 分钟内（代码护栏 MAX_TOTAL_S=180s 不变）。宿主差异表覆盖两种运行方式；`scripts/frame.sh` 供 CLI 宿主抽帧。原则：判断留给 LLM，机械留给代码——产品只暴露 analyze（算不了）、render（要进任务系统）和 ffmpeg（通用能力）三类能力。
 

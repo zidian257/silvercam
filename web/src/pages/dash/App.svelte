@@ -31,6 +31,7 @@
     skin?: string | null;
     fit?: boolean;
     bias_seconds?: number | null;
+    quickcut?: boolean;
     progress?: ProgressPayload | null;
     error?: string | null;
     output?: string | null;

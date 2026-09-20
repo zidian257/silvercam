@@ -84,6 +84,8 @@ export class JobQueue extends EventEmitter {
   running: boolean;
   currentId: string | null;
   _cardDeps: number;
+  // 出片后自动快剪的回链：app 装配 QuickcutService 后反挂（测试注桩）；null = 未接线
+  quickcuts: { create(data: { job_id: string }): Promise<unknown> } | null = null;
 
   constructor({ config = null, store = null }: { config?: ActpipeConfig | null; store?: ProcessedStore | null } = {}) {
     super();
@@ -170,6 +172,8 @@ export class JobQueue extends EventEmitter {
         lut: params.lut ?? null, // null = 按 probe 决策自动；'none' = 显式不套
         offset_seconds: params.offset_seconds ?? null,
         bias_seconds: params.bias_seconds ?? null, // 时间轴整体平移（正 = 数据延后），null = 用全局 global_bias_seconds
+        audio_volume: params.audio_volume ?? null, // 成片音量倍率（每条覆盖），null = 用全局 audio_volume
+        quickcut: params.quickcut ?? null, // 出片后自动快剪（每条覆盖），null = 用全局 quickcut_auto
         direct: params.direct ?? false,
         // 多段合并：同一次录制被相机切段（~20GB 一段）且共用同一 FIT 时，
         // segments 按拍摄时间排序 [{video, origin, origin_size, origin_mtime}]，逐段处理后拼接为一条
@@ -247,6 +251,19 @@ export class JobQueue extends EventEmitter {
     job.params.bias_seconds = biasSeconds;
     // bias 语义取代手动绝对 offset：各段按自己的开拍时刻锚定后整体平移，段间不累积误差
     job.params.offset_seconds = null;
+    // studio 可能回写过 lut（updatePrefs）：把显式 LUT 选择重算进各段 probe 决策，本次重渲即生效
+    if (job.params.lut != null) {
+      let decision: LutDecision =
+        job.params.lut === 'none'
+          ? { apply: false, lut: null, reason: 'explicit:none' }
+          : { apply: true, lut: resolveLutPath(this.config, job.params.lut), reason: 'explicit' };
+      if (decision.apply && decision.lut && !decision.lut.split('+').every((p) => fs.existsSync(p))) {
+        this.#log(job, `警告：LUT 文件不存在 ${decision.lut}，按不套 LUT 继续`);
+        decision = { ...decision, apply: false, lut: null, reason: `${decision.reason}+lut_missing` };
+      }
+      const probes = isMerge ? (job.artifacts.segments ?? []).map((a) => a?.probe) : [job.artifacts.probe];
+      for (const probe of probes) if (probe) probe.lut_decision = decision;
+    }
     for (const k of Object.keys(job.steps)) {
       if (/^(seg\d+:)?(fit|render|compose)$/.test(k) || k === 'concat') job.steps[k] = undefined;
     }
@@ -277,6 +294,19 @@ export class JobQueue extends EventEmitter {
     if (job.state === 'awaiting_fit' || job.state === 'failed') job.state = 'queued';
     this.#save(job);
     this.#kick();
+    return job;
+  }
+
+  // studio 预览选择的回写：只写给出的字段并落盘，不重排队列（skin/lut 在下一次 realign/重渲时生效）。
+  // 进行中拒绝（与 realign 同判据），避免改到一半被流水线读到
+  updatePrefs(id: string, prefs: { skin?: string; lut?: string | null }): Job {
+    const job = this.#mustGet(id);
+    if (['ingesting', 'probing', 'rendering', 'encoding'].includes(job.state)) {
+      throw new Error('任务正在运行，等它结束后再调整');
+    }
+    if (prefs.skin !== undefined) job.params.skin = prefs.skin;
+    if (prefs.lut !== undefined) job.params.lut = prefs.lut;
+    this.#save(job);
     return job;
   }
 
@@ -371,6 +401,7 @@ export class JobQueue extends EventEmitter {
         openPath: out,
       });
       this.#afterSuccess(job);
+      this.maybeAutoQuickcut(job);
     } catch (e: any) {
       job.state = 'failed';
       job.error = e.message;
@@ -633,6 +664,7 @@ export class JobQueue extends EventEmitter {
         durationS: probe.duration,
         scaleOverlayTo,
         overlayDelayS: frames.delay_s ?? 0,
+        audioVolume: job.params.audio_volume ?? this.config.audio_volume,
       },
       {
         durationS: probe.duration,
@@ -895,6 +927,7 @@ export class JobQueue extends EventEmitter {
                 durationS: probe.duration,
                 scaleOverlayTo,
                 overlayDelayS: frames.delay_s ?? 0,
+                audioVolume: job.params.audio_volume ?? this.config.audio_volume,
               },
               {
                 durationS: probe.duration,
@@ -974,6 +1007,19 @@ export class JobQueue extends EventEmitter {
       openPath: job.artifacts.output,
     });
     this.#afterMergeSuccess(job);
+    this.maybeAutoQuickcut(job); // 合并任务只在最终 merged 成片 done 后触发这一次
+  }
+
+  // 出片后自动快剪：params.quickcut（null 回落全局 quickcut_auto）且非纯拷贝（有 FIT 成片）才建。
+  // 快剪是附属产物：入队失败只记日志，绝不影响已完成的出片结果。
+  maybeAutoQuickcut(job: Job): void {
+    const want = job.params.quickcut ?? this.config.quickcut_auto ?? false;
+    if (!want) return;
+    if (!job.params.fit || job.params.fit === 'none') return; // 纯拷贝分支没有可剪的仪表盘成片
+    if (!job.artifacts.output) return;
+    if (!this.quickcuts) { this.#log(job, 'quickcuts 服务未接线，跳过自动快剪'); return; }
+    this.#log(job, '出片完成，自动创建快剪任务');
+    Promise.resolve(this.quickcuts.create({ job_id: job.id })).catch((e) => this.#log(job, `自动快剪入队失败：${(e as Error).message}`));
   }
 
   // 重阶段（render/encode）启动前的内存水位门（速率制实现见 util.waitSwapBudget）：

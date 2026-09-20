@@ -18,6 +18,7 @@ import { paths, ensureDirs } from '../lib/paths.ts';
 import { readJson, run, writeJsonAtomic } from '../lib/util.ts';
 import { annotatePauseAudio, assembleHeuristic, detectEvents, normalizeSamples, planFromCuts, quickcutOutputPathFor, renderQuickcut } from '../modules/quickcut.ts';
 import type { QuickcutPlan, QuickcutSegment } from '../modules/quickcut.ts';
+import * as interact from '../modules/interact.ts';
 import { resolveLlm, complete } from './llm.ts';
 import type { Job, SegmentArtifacts } from '../types.ts';
 import type { ConfigRef, LogFn } from './services/config.ts';
@@ -345,6 +346,18 @@ export class QuickcutService {
       rec.state = 'done';
       this.save();
       this.recLog(rec, `done → ${r.out}`);
+      // 快剪是独立交付物：自己的完成通知（点击在 Finder 定位短片），与全片通知各发各的；
+      // 通知失败不污结果（已 done 落盘）
+      try {
+        await interact.notify({
+          title: '快剪完成',
+          message: path.basename(r.out),
+          sound: this.configRef.current.notify_sound ?? 'Glass',
+          openPath: r.out,
+        });
+      } catch (e) {
+        this.recLog(rec, `完成通知发送失败：${(e as Error).message}`);
+      }
     } catch (e) {
       rec.error = (e as Error).message;
       rec.state = 'failed';

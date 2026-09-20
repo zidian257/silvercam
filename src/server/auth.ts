@@ -60,6 +60,31 @@ function loadOrCreateKey(file: string) {
   return s;
 }
 
+// ---- 登录限流：公网唯一暴露的攻击面就是 /api/login ----
+// 内存滑动窗口：每 IP 每分钟最多 LOGIN_MAX_ATTEMPTS 次尝试，超限 429。
+// 计全部尝试（成功也不清窗口——简单且防探测）；回环地址豁免（本机调试不被锁）。
+// 单用户单机，不需要 redis。调用侧 IP 取 req.ip（app 已 trust proxy，隧道后为最左可信源）。
+export const LOGIN_WINDOW_MS = 60_000;
+export const LOGIN_MAX_ATTEMPTS = 10;
+
+export function createLoginRateLimiter({ windowMs = LOGIN_WINDOW_MS, maxAttempts = LOGIN_MAX_ATTEMPTS, now = () => Date.now() } = {}) {
+  const hits = new Map<string, number[]>(); // ip -> 窗口内尝试时间戳
+  const EXEMPT = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+  function allow(ip: string | undefined | null): boolean {
+    if (!ip || EXEMPT.has(ip)) return true;
+    const t = now();
+    if (hits.size > 1024) { // 内存上限兜底：顺路清掉滑出窗口的 key
+      for (const [k, v] of hits) if (t - v[v.length - 1]! >= windowMs) hits.delete(k);
+    }
+    const arr = (hits.get(ip) ?? []).filter((x) => t - x < windowMs);
+    if (arr.length >= maxAttempts) { hits.set(ip, arr); return false; }
+    arr.push(t);
+    hits.set(ip, arr);
+    return true;
+  }
+  return { allow };
+}
+
 export const SESSION_COOKIE = 'actpipe_session';
 
 const LOGIN_PAGE = `<!doctype html>
@@ -95,7 +120,8 @@ document.getElementById('f').addEventListener('submit', async (e) => {
     const next = new URLSearchParams(location.search).get('next') ?? '/dash';
     location.href = next.startsWith('/') ? next : '/dash'; // 防 open-redirect
   } else {
-    document.getElementById('e').textContent = '密码错误';
+    const b = await r.json().catch(() => null); // 429 时显示限流文案而非「密码错误」
+    document.getElementById('e').textContent = (b && b.error) || '密码错误';
     document.getElementById('p').select();
   }
 });
@@ -146,12 +172,14 @@ export function createAuth({ configRef, dataDir }: { configRef: ConfigRef; dataD
   }
 
   function mountRoutes(app: RouteMounter) {
+    const loginLimiter = createLoginRateLimiter();
     app.get('/login', (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(LOGIN_PAGE);
     });
     app.post('/api/login', (req, res) => {
       if (!enabled()) return res.json({ ok: true, disabled: true });
+      if (!loginLimiter.allow(req.ip)) return res.status(429).json({ error: '尝试过于频繁，稍后再试' });
       const body = req.body ?? {};
       if (!verifyPassword(body.password, configRef.current.auth.password_hash)) {
         return res.status(401).json({ error: '密码错误' });

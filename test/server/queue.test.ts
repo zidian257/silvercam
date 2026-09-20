@@ -161,3 +161,75 @@ test('两段合并任务端到端：段流水线 + concat，步骤键全部落�
   assert.ok(states.includes('encoding'));
   assert.equal(states.at(-1), 'done');
 });
+
+// ---- 出片后自动快剪（maybeAutoQuickcut）----
+
+const fakeDoneJob = (over: Record<string, any> = {}): Job => {
+  const dir = fs.mkdtempSync(path.join(TMP_HOME, 'fakejob-')); // #log 要落 log.txt
+  return {
+    id: 'j-fake',
+    dir,
+    created_at: new Date().toISOString(),
+    state: 'done',
+    error: null,
+    steps: {},
+    progress: null,
+    params: { fit: FIT, quickcut: null, ...over.params },
+    artifacts: { output: '/x.mp4', ...over.artifacts },
+  } as unknown as Job;
+};
+
+test('自动快剪判定面：显式开 / 全局回落 / 显式关 / 纯拷贝不触发', async () => {
+  const queue = mkQueue(); // config.quickcut_auto = DEFAULTS true
+  const created: string[] = [];
+  queue.quickcuts = { create: async ({ job_id }: { job_id: string }) => { created.push(job_id); return {}; } };
+
+  queue.maybeAutoQuickcut(fakeDoneJob({ params: { quickcut: true } }));                    // 显式开
+  queue.maybeAutoQuickcut(fakeDoneJob({}));                                                // null → 回落全局 true
+  queue.maybeAutoQuickcut(fakeDoneJob({ params: { quickcut: false } }));                   // 显式关
+  queue.maybeAutoQuickcut(fakeDoneJob({ params: { quickcut: true, fit: 'none' } }));       // 纯拷贝无可剪成片
+  queue.maybeAutoQuickcut(fakeDoneJob({ params: { quickcut: true }, artifacts: { output: null } })); // 无产物
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(created.length, 2);
+});
+
+test('自动快剪：纯拷贝任务 done（真实流水线）不触发；未接线不炸', async () => {
+  const queue = mkQueue();
+  const created: string[] = [];
+  queue.quickcuts = { create: async ({ job_id }: { job_id: string }) => { created.push(job_id); return {}; } };
+  const job = queue.add({ video: VIDEO, fit: 'none', quickcut: true }); // 显式开，但纯拷贝
+  await waitState(queue, job.id, 'done');
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(created, []);
+
+  const bare = mkQueue(); // quickcuts 未接线（生产装配前的形态）
+  bare.maybeAutoQuickcut(fakeDoneJob({ params: { quickcut: true } })); // 只记日志，不抛
+});
+
+test('自动快剪：入队失败只记日志，不影响已完成的出片', async () => {
+  const queue = mkQueue();
+  queue.quickcuts = { create: async () => { throw new Error('boom'); } };
+  const job = fakeDoneJob({ params: { quickcut: true } });
+  queue.maybeAutoQuickcut(job); // 同步不抛
+  await new Promise((r) => setTimeout(r, 50)); // 异步 rejection 被 catch（不 unhandled）
+  assert.match(fs.readFileSync(path.join(job.dir, 'log.txt'), 'utf8'), /自动快剪入队失败：boom/);
+});
+
+test('updatePrefs: 只写给出的 skin/lut 字段并落盘（不重跑）；进行中任务拒绝', async () => {
+  const queue = mkQueue();
+  const job = queue.add({ video: VIDEO, fit: 'none' });
+  await waitState(queue, job.id, 'done');
+  const updated = queue.updatePrefs(job.id, { skin: 'dashline' });
+  assert.equal(updated.params.skin, 'dashline');
+  assert.equal(updated.params.lut, null); // 未给的字段不动
+  queue.updatePrefs(job.id, { lut: 'none' });
+  const onDisk = JSON.parse(fs.readFileSync(path.join(job.dir, 'job.json'), 'utf8'));
+  assert.equal(onDisk.params.skin, 'dashline');
+  assert.equal(onDisk.params.lut, 'none');
+
+  const running = fakeDoneJob({});
+  running.state = 'rendering';
+  queue.jobs.set(running.id, running);
+  assert.throws(() => queue.updatePrefs(running.id, { skin: 'x' }), /正在运行/);
+  assert.throws(() => queue.updatePrefs('ghost', { skin: 'x' }), /not found/);
+});

@@ -18,6 +18,7 @@ export interface FfmpegArgsOpts {
   durationS?: number | null;
   scaleOverlayTo?: [number, number] | null;
   overlayDelayS?: number;
+  audioVolume?: number; // 1（缺省）= -c:a copy 零改动；其余重编码 AAC 192k 并挂 volume 滤镜
 }
 
 export function buildFfmpegArgs({
@@ -34,6 +35,7 @@ export function buildFfmpegArgs({
   durationS = null, // 输出截断到源视频时长（PNG 序列按窗口渲染可能略长）
   scaleOverlayTo = null, // [w, h] 当仪表盘画布分辨率与视频不一致时
   overlayDelayS = 0, // 视频开拍早于 FIT 起点（负 offset）时，overlay 延后入场；头部画面无仪表盘
+  audioVolume = 1, // 成片原声音量倍率：1 = -c:a copy 零改动；其余重编码 AAC
 }: FfmpegArgsOpts): string[] {
   // lut 可为 '+' 连接的链（依次套用）；单 LUT 时与原逻辑一致
   const lutStage = lut
@@ -69,7 +71,11 @@ export function buildFfmpegArgs({
   if (tenBit) args.push('-pix_fmt', 'p010le', '-profile:v', 'main10');
   // LUT 输出即 Rec.709 SDR，色彩标签必须显式打，否则播放器按错误值解释
   args.push('-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709');
-  args.push('-c:a', 'copy', '-progress', 'pipe:1', '-nostats', '-n');
+  // 音量 ≠ 1（含静音 0）才动音频：volume 滤镜 + AAC 重编码（开销可忽略）；=1 保持流拷贝零改动
+  const vol = Number.isFinite(audioVolume) ? (audioVolume as number) : 1;
+  if (vol === 1) args.push('-c:a', 'copy');
+  else args.push('-af', `volume=${vol}`, '-c:a', 'aac', '-b:a', '192k');
+  args.push('-progress', 'pipe:1', '-nostats', '-n');
   if (durationS) args.push('-t', String(durationS));
   args.push(out);
   return args;

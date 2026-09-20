@@ -51,6 +51,33 @@ test('buildFfmpegArgs: durationS 截断输出，音频流拷贝', () => {
   assert.equal(args[args.indexOf('-c:a') + 1], 'copy');
 });
 
+test('buildFfmpegArgs: audioVolume 缺省/=1 → -c:a copy 零改动路径（无 -af）', () => {
+  for (const audioVolume of [undefined, 1]) {
+    const args = buildFfmpegArgs({ video: 'i.mp4', framesPattern: null, out: 'o.mp4', audioVolume });
+    assert.equal(args[args.indexOf('-c:a') + 1], 'copy');
+    assert.ok(!args.includes('-af'));
+  }
+});
+
+test('buildFfmpegArgs: audioVolume ≠ 1 → -af volume + AAC 192k（含静音 0）', () => {
+  const args = buildFfmpegArgs({ video: 'i.mp4', framesPattern: null, out: 'o.mp4', audioVolume: 0.5 });
+  assert.equal(args[args.indexOf('-af') + 1], 'volume=0.5');
+  assert.equal(args[args.indexOf('-c:a') + 1], 'aac');
+  assert.equal(args[args.indexOf('-b:a') + 1], '192k');
+  const mute = buildFfmpegArgs({ video: 'i.mp4', framesPattern: null, out: 'o.mp4', audioVolume: 0 });
+  assert.equal(mute[mute.indexOf('-af') + 1], 'volume=0');
+});
+
+test('buildFfmpegArgs: 音量调节不动既有滤镜链（lut3d/overlay 原样）', () => {
+  const args = buildFfmpegArgs({
+    video: 'i.mp4', framesPattern: '/f/%05d.png', startNumber: 0, overlayFps: 10, videoFps: 30,
+    out: 'o.mp4', lut: '/a.cube+/b.cube', audioVolume: 1.5,
+  });
+  const filter = args[args.indexOf('-filter_complex') + 1];
+  assert.ok(filter.includes("lut3d='/a.cube',lut3d='/b.cube'"));
+  assert.ok(filter.includes('[base][ov]overlay=0:0:format=auto[out]'));
+});
+
 test('buildFfmpegArgs: 主输入启用 videotoolbox 硬解（实测全链 ~2x）', () => {
   const args = buildFfmpegArgs({ video: 'i.mp4', framesPattern: null, out: 'o.mp4' });
   assert.equal(args[args.indexOf('-hwaccel') + 1], 'videotoolbox');

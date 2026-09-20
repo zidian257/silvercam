@@ -1,7 +1,7 @@
 <script lang="ts">
   import { SlidersHorizontal } from 'lucide-svelte';
   import Thumb from './Thumb.svelte';
-  import { fmtSize, fmtDur, fmtRec } from '../inbox.ts';
+  import { fmtSize, fmtDur, fmtRec, VOLUME_OPTIONS } from '../inbox.ts';
 
   // /api/inbox 清单项（服务端 Inbox.list 的投影；非共享类型，本地定义）
   interface IngestState {
@@ -39,6 +39,8 @@
     skin: string;
     lut: string;
     fit: string;
+    volume: string;
+    quickcut: boolean;
     memberIds: string[];
   }
   interface SelectOption {
@@ -160,6 +162,14 @@
           <select value={sel.fit} onchange={onFitSelect}>
             {#each fitOptions as o}<option value={o.value} selected={o.value === sel.fit}>{o.label}</option>{/each}
           </select>
+        </label>
+        <label class="field" title="成片音量：默认=跟随全局设置；静音=去掉原声"><span>音量</span>
+          <select value={sel.volume} onchange={(e) => { sel.volume = (e.target as HTMLSelectElement).value; onSelChange(); }}>
+            {#each VOLUME_OPTIONS as o}<option value={o.value} selected={o.value === sel.volume}>{o.label}</option>{/each}
+          </select>
+        </label>
+        <label class="field" title="出片后自动用成片跑一次快剪（可在「快剪」页继续微调）"><span>快剪</span>
+          <input type="checkbox" checked={sel.quickcut} onchange={(e) => { sel.quickcut = (e.target as HTMLInputElement).checked; onSelChange(); }}>
         </label>
         <a class="btn icon" href={studioHref} title="studio 对齐/预览：看视频、套 LUT/皮肤实时预览、定格校准时间轴（内部可切换各段）"><SlidersHorizontal size={16} /></a>
         {#if aligned}

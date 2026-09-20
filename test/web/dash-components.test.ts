@@ -71,4 +71,20 @@ describe('JobsTable', () => {
     await fireEvent.click(container.querySelector('button[title="日志"]')!);
     expect(onToggleLog).toHaveBeenCalledWith('j1');
   });
+
+  it('快剪标记：有记录显示可点状态 pill；无记录但会自动快剪时显示静态 pill', async () => {
+    const onToggleQuickcut = vi.fn();
+    render(JobsTable, { props: { jobs: [
+      job({ id: 'a', quickcut: true }),                                     // 标记自动快剪、尚无记录
+      job({ id: 'b', quickcut: true }),                                     // 已有快剪记录
+      job({ id: 'c' }),                                                     // 未标记 → 不出 pill
+    ], quickcuts: [
+      { id: 'qc1', job_id: 'b', state: 'done', created_at: '2026-09-19T10:00:00Z' },
+    ], onToggleQuickcut } });
+    const qcPill = screen.getByText('快剪·完成');
+    await fireEvent.click(qcPill);
+    expect(onToggleQuickcut).toHaveBeenCalledWith('b');
+    expect(screen.getByText('快剪', { exact: true }).tagName).toBe('SPAN'); // a 的静态 pill
+    expect(screen.queryAllByText(/快剪/).length).toBe(2);
+  });
 });

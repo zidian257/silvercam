@@ -167,6 +167,12 @@ export function lutOptionValue({ qsLut = null, sourceLut = null, dlogSuspected =
   return init; // 不在选项里时调用方负责追加一个自定义 option
 }
 
+// 定格状态行：定格后显示当前 bias 对应的 FIT 起点视频时刻（fitS=0 ⇒ t=−offset，随微调实时更新）
+export function pinStatusFor(pinned: boolean, offset: number | null | undefined): string {
+  if (!pinned || offset == null) return '';
+  return `FIT 起点 @ ${mmss(-offset)}`;
+}
+
 // 保存按钮的形态（按 source kind/state）
 export function savePlan(source: StudioSource | null | undefined): SavePlanResult {
   if (!source || source.kind === 'adhoc') {

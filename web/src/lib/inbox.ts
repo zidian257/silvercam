@@ -7,6 +7,8 @@ export interface SelValue {
   skin?: string;
   lut?: string;
   fit?: string | null;
+  volume?: string; // '' = 默认（跟随全局 audio_volume，决策省略该键）
+  quickcut?: boolean; // 出片后自动快剪
   memberIds: string[];
   [k: string]: any;
 }
@@ -17,7 +19,20 @@ export interface InboxDecision {
   skin?: string;
   lut?: string | null;
   fit?: string;
+  audio_volume?: number;
+  quickcut?: boolean;
 }
+
+// 成片音量档位（commit 决策的 audio_volume；'' = 跟随全局 config.audio_volume）
+export const VOLUME_OPTIONS = [
+  { value: '', label: '默认' },
+  { value: '0', label: '静音' },
+  { value: '0.25', label: '25%' },
+  { value: '0.5', label: '50%' },
+  { value: '0.75', label: '75%' },
+  { value: '1', label: '100%' },
+  { value: '1.5', label: '150%' },
+];
 
 export interface CommitResult {
   id?: string;
@@ -105,7 +120,14 @@ export function buildDecisions(selValues: SelValue[], action: string): InboxDeci
   for (const s of selValues) {
     if (!s.checked) continue;
     for (const id of s.memberIds) {
-      decisions.push(action === 'skip' ? { id, action: 'skip' } : { id, action: 'process', skin: s.skin, lut: s.lut || null, fit: s.fit || 'none' });
+      if (action === 'skip') {
+        decisions.push({ id, action: 'skip' });
+        continue;
+      }
+      const d: InboxDecision = { id, action: 'process', skin: s.skin, lut: s.lut || null, fit: s.fit || 'none' };
+      if (s.volume != null && s.volume !== '') d.audio_volume = Number(s.volume); // '0'（静音）也是显式选择
+      if (s.quickcut != null) d.quickcut = s.quickcut;
+      decisions.push(d);
     }
   }
   return decisions;

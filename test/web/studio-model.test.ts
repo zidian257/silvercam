@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import {
-  mmss, sampleAt, parseCube, dataWindow, autoOffset, findDataSegment, captionFor, lutOptionValue, savePlan,
+  mmss, sampleAt, parseCube, dataWindow, autoOffset, findDataSegment, captionFor, lutOptionValue, savePlan, pinStatusFor,
 } from '../../web/src/lib/studio.ts';
 
 describe('mmss', () => {
@@ -132,5 +132,20 @@ describe('savePlan: 保存按钮形态', () => {
   });
   it('inbox：保存对齐', () => {
     expect(savePlan({ kind: 'inbox' }).label).toBe('保存对齐');
+  });
+});
+
+describe('pinStatusFor: 定格后的工具栏状态', () => {
+  it('未定格 / 无 offset → 空', () => {
+    expect(pinStatusFor(false, -83)).toBe('');
+    expect(pinStatusFor(true, null)).toBe('');
+    expect(pinStatusFor(true, undefined)).toBe('');
+  });
+  it('定格后显示 FIT 起点对应的视频时刻（fitS=0 ⇒ t=−offset），随微调实时更新', () => {
+    expect(pinStatusFor(true, -83)).toBe('FIT 起点 @ 1:23');
+    expect(pinStatusFor(true, -83.4)).toBe('FIT 起点 @ 1:23');
+  });
+  it('起点落在本段开拍之前（正 offset）→ 负时刻如实显示', () => {
+    expect(pinStatusFor(true, 12)).toBe('FIT 起点 @ -0:12');
   });
 });

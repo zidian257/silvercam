@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   hashPassword, verifyPassword, signToken, verifyToken, createAuth,
+  createLoginRateLimiter, LOGIN_WINDOW_MS, LOGIN_MAX_ATTEMPTS,
 } from '../../src/server/auth.ts';
 
 // createApp 级联前的最小装配与 app.js 一致：feathersExpress + json + auth 中间件
@@ -125,4 +126,38 @@ test('/favicon.ico 豁免鉴权（登录页未登录也要能显示图标）', a
   const { app } = mkApp();
   const r = await request(app, '/favicon.ico');
   assert.equal(r.status, 200);
+});
+
+// ---- 登录限流（内存滑动窗口，计全部尝试，成功不清窗口）----
+test('限流器：窗口内放行，超限拒绝，按 IP 隔离，窗口滑过后恢复', () => {
+  let t = 1_000_000;
+  const lim = createLoginRateLimiter({ now: () => t });
+  for (let i = 0; i < LOGIN_MAX_ATTEMPTS; i++) assert.equal(lim.allow('203.0.113.1'), true);
+  assert.equal(lim.allow('203.0.113.1'), false); // 超限
+  assert.equal(lim.allow('203.0.113.2'), true);  // 按 IP 隔离
+  t += LOGIN_WINDOW_MS + 1;                      // 窗口滑过
+  assert.equal(lim.allow('203.0.113.1'), true);
+});
+
+test('限流器：回环地址豁免（本机调试不被锁）', () => {
+  const lim = createLoginRateLimiter();
+  for (let i = 0; i < LOGIN_MAX_ATTEMPTS + 5; i++) {
+    assert.equal(lim.allow('127.0.0.1'), true);
+    assert.equal(lim.allow('::1'), true);
+    assert.equal(lim.allow('::ffff:127.0.0.1'), true);
+  }
+});
+
+test('/api/login 接线：trust proxy 后 XFF 来源超限 429，回环直连不锁', async () => {
+  const { app } = mkApp();
+  app.set('trust proxy', true); // 与 app.ts 一致：req.ip 取最左可信源
+  const login = (headers: Record<string, string>) =>
+    request(app, '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ password: 'nope' }) });
+  const xff = { 'X-Forwarded-For': '203.0.113.9' };
+  for (let i = 0; i < LOGIN_MAX_ATTEMPTS; i++) assert.equal((await login(xff)).status, 401);
+  const blocked = await login(xff);
+  assert.equal(blocked.status, 429);
+  assert.deepEqual(await blocked.json(), { error: '尝试过于频繁，稍后再试' });
+  // 回环直连（无 XFF）永不锁
+  for (let i = 0; i < LOGIN_MAX_ATTEMPTS + 2; i++) assert.equal((await login({})).status, 401);
 });

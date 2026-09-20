@@ -6,11 +6,13 @@ import path from 'node:path';
 import type { Application } from '@feathersjs/express';
 import type { AddressInfo } from 'node:net';
 import type { QueueLike } from '../../src/server/services/jobs.ts';
+import type { Inbox as InboxClass } from '../../src/server/inbox.ts';
 
 // createApp 内部用 paths.home 做鉴权数据目录、paths.fits 等：临时 ACTPIPE_HOME 隔离
 process.env.ACTPIPE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'actpipe-api-'));
 const { createApp } = await import('../../src/server/app.ts');
 const { DEFAULTS } = await import('../../src/lib/config.ts');
+const { Inbox } = await import('../../src/server/inbox.ts');
 // @ts-expect-error -- fitsdk 的 index.d.ts 用无扩展名 re-export，nodenext 解析不到（同 src/modules/fit.ts）
 const { Encoder, Profile } = await import('@garmin/fitsdk');
 
@@ -65,6 +67,7 @@ type QueueStub = {
   attachFit(id: string): StubJob;
   setOffset(id: string, off: number): StubJob;
   realign(id: string, bias: number): StubJob;
+  updatePrefs(id: string, prefs: Record<string, unknown>): StubJob;
 };
 const mkQueue = (): QueueStub => ({
   jobs: [],
@@ -81,9 +84,10 @@ const mkQueue = (): QueueStub => ({
   attachFit(id) { const j = this.get(id); if (!j) throw new Error(`job not found: ${id}`); j.params.fit = 'attached.fit'; return j; },
   setOffset(id, off) { const j = this.get(id); if (!j) throw new Error(`job not found: ${id}`); j.params.offset_seconds = off; return j; },
   realign(id, bias) { const j = this.get(id); if (!j) throw new Error(`job not found: ${id}`); j.params.bias_seconds = bias; return j; },
+  updatePrefs(id, prefs) { const j = this.get(id); if (!j) throw new Error(`job not found: ${id}`); Object.assign(j.params, prefs); return j; },
 });
 
-const mkApp = ({ inbox = null } = {}) => {
+const mkApp = ({ inbox = null }: { inbox?: InboxClass | null } = {}) => {
   const queue = mkQueue();
   const fitLib = fs.mkdtempSync(path.join(os.tmpdir(), 'actpipe-fitlib-'));
   const configRef = { current: { ...DEFAULTS, fit_library_dir: fitLib, auth: { password_hash: null } } };
@@ -119,10 +123,15 @@ test('POST /jobs：视频不存在 400，存在则 201 入队', async () => {
 test('GET /jobs 列表摘要 + GET /jobs/:id 404', async () => {
   const { app, queue } = mkApp();
   queue.add({ video: VIDEO, skin: 's', fit: 'none' });
-  const list = (await (await request(app, '/jobs')).json()) as { video: string; fit: boolean }[];
-  assert.equal(list.length, 1);
+  queue.add({ video: VIDEO, fit: '/x.fit', quickcut: true });
+  queue.add({ video: VIDEO, fit: '/x.fit' }); // 未显式选快剪且队列 config 缺省 → 不标
+  const list = (await (await request(app, '/jobs')).json()) as { video: string; fit: boolean; quickcut: boolean }[];
+  assert.equal(list.length, 3);
   assert.equal(list[0].video, 'DJI_20260906100100.MP4');
   assert.equal(list[0].fit, false); // fit:'none' 展示为 false
+  assert.equal(list[0].quickcut, false); // 无 FIT 不出快剪标记
+  assert.equal(list[1].quickcut, true);
+  assert.equal(list[2].quickcut, false);
   const r = await request(app, '/jobs/ghost');
   assert.equal(r.status, 404);
 });
@@ -250,6 +259,60 @@ test('GET /api/align/source：三参数必给其一', async () => {
   assert.equal((await request(app, '/api/align/source')).status, 400);
 });
 
+test('POST /api/inbox/:id/align：fit/bias 与 skin/lut 分通道回写（merge）；空 patch / 坏 fit 400', async () => {
+  const inbox = new Inbox({ configRef: { current: { ...DEFAULTS } }, log: () => {} });
+  inbox.items = [{
+    id: 'm1', src: VIDEO, size: 1, mtime_ms: null, volume: {}, found_at: '2026-09-06T02:00:00.000Z',
+    staged: null, ingest: { state: 'on_card', percent: 0 }, probe: null, status: 'pending', decision: null, job_id: null,
+  }];
+  const { app } = mkApp({ inbox });
+  const post = (body: unknown) => request(app, '/api/inbox/m1/align', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  // studio 预览选择回写：只带 skin/lut，不要求 fit
+  const skinOnly = await post({ skin: 'topline', lut: 'none' });
+  assert.equal(skinOnly.status, 200);
+  assert.deepEqual(inbox.get('m1')!.pre_align, { fit: null, bias_seconds: null, skin: 'topline', lut: 'none' });
+  // 定格保存回写 fit/bias：不覆盖已存的 skin/lut
+  const fitBias = await post({ fit: FIT, bias_seconds: -1.5 });
+  assert.equal(fitBias.status, 200);
+  assert.deepEqual(inbox.get('m1')!.pre_align, { fit: FIT, bias_seconds: -1.5, skin: 'topline', lut: 'none' });
+  assert.equal((await post({})).status, 400); // 四键至少给一个
+  assert.equal((await post({ fit: '/nope.fit', bias_seconds: 0 })).status, 400);
+  assert.equal((await post({ bias_seconds: 'x' })).status, 400);
+});
+
+test('GET /api/align/source?inbox=：skin/lut 取 pre_align，缺省回落 decision/全局默认', async () => {
+  const inbox = new Inbox({ configRef: { current: { ...DEFAULTS } }, log: () => {} });
+  const mk = (id: string, over: Record<string, unknown> = {}) => ({
+    id, src: VIDEO, size: 1, mtime_ms: null, volume: {}, found_at: '2026-09-06T02:00:00.000Z',
+    staged: null, ingest: { state: 'on_card', percent: 0 }, probe: null, status: 'pending', decision: null, job_id: null,
+    ...over,
+  });
+  inbox.items = [
+    mk('p1', { pre_align: { fit: FIT, bias_seconds: -2, skin: 'dashline', lut: 'none' } }),
+    mk('p2', { decision: { skin: 'ledge', lut: null, fit: null, bias_seconds: null } }),
+    mk('p3'),
+  ];
+  const { app } = mkApp({ inbox });
+  const s1 = (await (await request(app, '/api/align/source?inbox=p1')).json()) as { skin: string; lut: string | null };
+  assert.equal(s1.skin, 'dashline');
+  assert.equal(s1.lut, 'none'); // 显式「不套」也如实回传
+  const s2 = (await (await request(app, '/api/align/source?inbox=p2')).json()) as { skin: string };
+  assert.equal(s2.skin, 'ledge');
+  const s3 = (await (await request(app, '/api/align/source?inbox=p3')).json()) as { skin: string; lut: string | null };
+  assert.equal(s3.skin, DEFAULTS.skin);
+  assert.equal(s3.lut, null);
+});
+
+test('GET /api/align/source?job=：lut 优先 params.lut（显式 none 如实回传），缺省回落 probe 决策', async () => {
+  const { app, queue } = mkApp();
+  const a = queue.add({ video: VIDEO, fit: FIT, lut: 'none' });
+  const b = queue.add({ video: VIDEO, fit: FIT });
+  const sa = (await (await request(app, `/api/align/source?job=${a.id}`)).json()) as { lut: string | null };
+  assert.equal(sa.lut, 'none');
+  const sb = (await (await request(app, `/api/align/source?job=${b.id}`)).json()) as { lut: string | null };
+  assert.equal(sb.lut, null); // artifacts.probe 未跑 → null
+});
+
 test('PUT /config：合并写入并同步 queue.config', async () => {
   const { app, queue, configRef } = mkApp();
   const r = await request(app, '/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ smooth_window_s: 5 }) });
@@ -279,6 +342,22 @@ test('POST /jobs/:id/bias：转发 realign，错误 400', async () => {
   assert.equal(ok.status, 200);
   assert.equal(queue.get(job.id)!.params.bias_seconds, -2.5);
   assert.equal((await request(app, '/jobs/ghost/bias', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bias_seconds: 1 }) })).status, 400);
+});
+
+test('POST /jobs/:id/prefs：studio 皮肤/LUT 回写，只写给出的键；校验错误 400', async () => {
+  const { app, queue } = mkApp();
+  const job = queue.add({ video: VIDEO });
+  const post = (id: string, body: unknown) => request(app, `/jobs/${id}/prefs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await post(job.id, { skin: 42 })).status, 400);
+  assert.equal((await post(job.id, {})).status, 400); // skin/lut 至少给一个
+  const ok = await post(job.id, { skin: 'dashline', lut: 'none' });
+  assert.equal(ok.status, 200);
+  assert.equal(queue.get(job.id)!.params.skin, 'dashline');
+  assert.equal(queue.get(job.id)!.params.lut, 'none');
+  await post(job.id, { lut: null }); // 单键回写
+  assert.equal(queue.get(job.id)!.params.skin, 'dashline');
+  assert.equal(queue.get(job.id)!.params.lut, null);
+  assert.equal((await post('ghost', { skin: 'x' })).status, 400); // 同 bias：队列错误一律 400
 });
 
 test('GET /quickcuts/:id/log：有记录回日志文本；无记录 404', async () => {

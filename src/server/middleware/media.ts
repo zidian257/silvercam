@@ -113,7 +113,8 @@ export function createMediaRouter({ queue, configRef, inbox, refs, quickcuts = n
         skin: job.params.skin,
         fit: job.params.fit,
         bias_seconds: job.params.bias_seconds ?? configRef.current.global_bias_seconds ?? 0,
-        lut: (isMerge ? job.artifacts.segments?.[0]?.probe : job.artifacts.probe)?.lut_decision?.lut ?? null,
+        // params.lut 优先（studio 回写后保持所选；'none' 如实回传），缺省回落 probe 的 D-Log 决策
+        lut: job.params.lut ?? (isMerge ? job.artifacts.segments?.[0]?.probe : job.artifacts.probe)?.lut_decision?.lut ?? null,
         default_lut: configRef.current.default_lut ?? null,
         running: ['ingesting', 'probing', 'rendering', 'encoding'].includes(job.state),
         segments: segs.map(({ i, name, art }) => ({
@@ -157,11 +158,12 @@ export function createMediaRouter({ queue, configRef, inbox, refs, quickcuts = n
         kind: 'inbox',
         id: item.id,
         state: item.status,
-        skin: configRef.current.skin,
+        // studio 校准/预览选择（pre_align）优先，其次上次提交决策，最后全局默认
+        skin: item.pre_align?.skin ?? item.decision?.skin ?? configRef.current.skin,
         fits: listFits(configRef.current),
         fit: item.pre_align?.fit ?? item.decision?.fit ?? suggestion ?? null,
         bias_seconds: item.pre_align?.bias_seconds ?? item.decision?.bias_seconds ?? configRef.current.global_bias_seconds ?? 0,
-        lut: null,
+        lut: item.pre_align?.lut ?? item.decision?.lut ?? null,
         default_lut: configRef.current.default_lut ?? null,
         running: false,
         seg_idx: segIdx,

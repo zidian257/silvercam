@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { api, getJson, postJson } from '../../lib/api.ts';
-  import { mmss, sampleAt, parseCube, dataWindow, autoOffset, findDataSegment, captionFor, lutOptionValue, savePlan } from '../../lib/studio.ts';
+  import { mmss, sampleAt, parseCube, dataWindow, autoOffset, findDataSegment, captionFor, lutOptionValue, savePlan, pinStatusFor } from '../../lib/studio.ts';
   import { LutPreviewer } from '../../lib/lutgl.ts';
   import SeekBar from '../../lib/components/SeekBar.svelte';
   import AppNav from '../../lib/components/AppNav.svelte';
@@ -80,7 +80,7 @@
   let timeLabel = $state('0:00 / 0:00');
   let seekFrac = $state(0);
   let seekWin = $state<[number, number] | null>(null); // [loPct, hiPct] | null
-  let pinLabel = $state('定格 FIT 起点在此帧');
+  let pinStatus = $state(''); // 定格后常驻：FIT 起点 @ mm:ss（随微调实时更新）
   let playing = $state(false);
   let ovlHeight = $state(200);
 
@@ -96,7 +96,9 @@
   let lastFitS: number | null = null;
   let videoSrc: string | null = null;
   let pendingSeek: number | null = null;
-  let pinned = false;
+  let pinned = false; // 是否已定格过（pinStatus 的投影由 refreshOverlays 显式维护，无需进响应式）
+  let ready = false; // onMount 初始化完成后才允许回写（避免初始化过程把默认值写回去）
+  let writebackTimer: ReturnType<typeof setTimeout> | null = null;
 
   const seg = () => source?.segments?.[segIdx] ?? null;
   const skinEl = (id: string) => skinWin?.document.getElementById(id) ?? null;
@@ -195,6 +197,7 @@
     const off = curOffset();
     const win = g && samples ? dataWindow({ duration: g.duration, count: samples.count, offset: off }) : null;
     seekWin = g?.duration && win ? [win[0] / g.duration, win[1] / g.duration] as [number, number] : null;
+    pinStatus = pinStatusFor(pinned, off); // 定格后常驻状态，微调（bias 变化）经此实时更新
 
     const biasTxt = `bias ${bias >= 0 ? '+' : ''}${bias.toFixed(2)}s`;
     if (off == null) {
@@ -275,7 +278,7 @@
   }
 
   // ---- 定格 + 逐帧微调：唯一的对齐交互 ----
-  // 播放 → 在出发/起步那一帧暂停 → 「定格 FIT 起点」→ 逐帧微调（带着起点一起走）。
+  // 播放 → 在出发/起步那一刻暂停 → 「定格起点」（可反复定格）→ 逐帧微调（带着起点一起走）。
   function setBias(b: number) {
     bias = Math.round(Number(b) * 100) / 100; // 帧级精度：保留两位小数
     lastFitS = null;
@@ -286,10 +289,9 @@
     const a = autoOffset(seg(), samples);
     if (a == null) { setMsg('该段缺拍摄时刻，无法定格（换有拍摄时间的一段）', true); return; }
     v.pause();
+    pinned = true; // 先置位再 setBias：refreshOverlays 才能投出定格状态
     setBias(-a - v.currentTime); // 令当前帧 fitS = 0
-    pinned = true;
-    pinLabel = `已定格在 ${mmss(v.currentTime)}`;
-    setMsg(`FIT 起点已定格在 t=${mmss(v.currentTime)}，用逐帧微调校准`);
+    setMsg(`FIT 起点已定格在 t=${mmss(v.currentTime)}，用逐帧微调校准（可再点「定格起点」重定）`);
   }
   function nudgeFrames(n: number) {
     if (!v) return;
@@ -319,7 +321,6 @@
     }
     lastFitS = null;
     pinned = false;
-    pinLabel = '定格 FIT 起点在此帧';
     refreshOverlays();
   }
 
@@ -334,11 +335,36 @@
   async function onSkinChange() {
     await loadSkin(skinName).catch((e) => setMsg(e.message, true));
     await applyLut(lutName); // loadSkin 换文档后 GL 上下文已作废，重建
+    scheduleWriteback();
   }
   async function onFitChange() {
     await loadSamples(fitPath);
     await loadSkin(skinName).catch(() => {});
     await applyLut(lutName);
+    scheduleWriteback();
+  }
+  async function onLutChange() {
+    await applyLut(lutName);
+    scheduleWriteback();
+  }
+
+  // ---- 选择回写：studio 里看到的选择即下次处理的默认（600ms 防抖合并连续改动）----
+  // inbox 来源写 pre_align（含当前 fit/bias：pre_align 语义=当前所见对齐）；job 来源写任务 params
+  function scheduleWriteback() {
+    if (!ready || !source) return;
+    if (writebackTimer) clearTimeout(writebackTimer);
+    writebackTimer = setTimeout(async () => {
+      writebackTimer = null;
+      try {
+        if (source!.kind === 'inbox') {
+          await postJson(`/api/inbox/${source!.id}/align`, { skin: skinName, lut: lutName, fit: fitPath, bias_seconds: bias });
+        } else if (source!.kind === 'job') {
+          await postJson(`/jobs/${source!.id}/prefs`, { skin: skinName, lut: lutName });
+        }
+      } catch (e) {
+        setMsg(`选择回写失败：${(e as Error).message}`, true);
+      }
+    }, 600);
   }
 
   // ---- 保存 ----
@@ -412,6 +438,7 @@
       const off = curOffset();
       const win = seg() && samples ? dataWindow({ duration: seg()!.duration, count: samples.count, offset: off }) : null;
       if (win) jumpToFitS(win[0] + (off ?? 0) + 3);
+      ready = true; // 初始化完成，之后的选择改动才回写
     } catch (e) {
       setMsg((e as Error).message, true);
     }
@@ -419,6 +446,7 @@
   onDestroy(() => {
     ro?.disconnect();
     document.removeEventListener('keydown', onKey);
+    if (writebackTimer) clearTimeout(writebackTimer);
   });
 </script>
 
@@ -445,6 +473,7 @@
       <button class="btn icon" onclick={() => nudgeFrames(1)} title="前进 1 帧（→）"><ChevronRight size={16} /></button>
       <button class="btn icon" onclick={() => nudgeFrames(10)} title="前进 10 帧（Shift+→）"><ChevronsRight size={16} /></button>
     </div>
+    {#if pinStatus}<span class="pinstatus" title="当前 bias 下 FIT 起点（t=0）落在本段视频的这个时刻">{pinStatus}</span>{/if}
     <SeekBar frac={seekFrac} dataWin={seekWin} label={timeLabel} {onSeek} />
     <div class="tbsels">
       {#if showSegSel}
@@ -460,15 +489,15 @@
       <select bind:value={skinName} onchange={onSkinChange} title="仪表盘皮肤">
         {#each skins as s}<option value={s}>{s}</option>{/each}
       </select>
-      <select bind:value={lutName} onchange={() => applyLut(lutName)} title="LUT 预览">
+      <select bind:value={lutName} onchange={onLutChange} title="LUT 预览">
         {#each lutOpts as o}<option value={o.value}>{o.label}</option>{/each}
       </select>
     </div>
   </div>
 
   <div class="pinrow">
-    <button class="btn primary pinbtn" onclick={pin} title="把 FIT 的起点（t=0）定格在当前这一帧：播放到出发/起步那一刻暂停，点它">
-      <Crosshair size={16} />{pinLabel}
+    <button class="btn primary pinbtn" onclick={pin} title="把 FIT 起点（t=0）定在当前这一帧。可反复点：每次都以当前帧重新定格；定格后用逐帧微调校准">
+      <Crosshair size={16} />定格起点
     </button>
   </div>
   <div class="offsetline">
@@ -477,7 +506,7 @@
   </div>
 
   <div class="caption">{caption}</div>
-  <div class="hint" title="播放找到出发/起步那一刻（开表会有 beep 声）→ 暂停 → 「定格 FIT 起点」→ 逐帧微调（定格后带着 FIT 起点一起走）。进度条高亮区段 = 有 FIT 数据；预览为原片实时套 LUT 的近似效果，成片以 ffmpeg 渲染为准。">播放找到出发/起步那一刻（开表会有 beep 声）→ 暂停 → 「定格 FIT 起点」→ 逐帧微调（定格后带着 FIT 起点一起走）。进度条高亮区段 = 有 FIT 数据；预览为原片实时套 LUT 的近似效果，成片以 ffmpeg 渲染为准。</div>
+  <div class="hint" title="播放找到出发/起步那一刻（开表会有 beep 声）→ 暂停 → 「定格起点」（可反复定格）→ 逐帧微调（定格后带着 FIT 起点一起走）。进度条高亮区段 = 有 FIT 数据；预览为原片实时套 LUT 的近似效果，成片以 ffmpeg 渲染为准。">播放找到出发/起步那一刻（开表会有 beep 声）→ 暂停 → 「定格起点」（可反复定格）→ 逐帧微调（定格后带着 FIT 起点一起走）。进度条高亮区段 = 有 FIT 数据；预览为原片实时套 LUT 的近似效果，成片以 ffmpeg 渲染为准。</div>
 
   {#if save.visible}
     <div class="saverow">
@@ -531,6 +560,13 @@
   .stepper .btn:first-child { border-radius: var(--r-ctl) 0 0 var(--r-ctl); margin-left: 0; }
   .stepper .btn:last-child { border-radius: 0 var(--r-ctl) var(--r-ctl) 0; }
   .stepper .btn:hover { position: relative; z-index: 1; }
+  .pinstatus {
+    flex: none;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--accent);
+    white-space: nowrap;
+  }
   .tbsels { display: flex; gap: 8px; align-items: center; flex: none; }
   .tbsels select { max-width: 160px; }
   .pinrow { display: flex; justify-content: center; margin-top: 16px; }

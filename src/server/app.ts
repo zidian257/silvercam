@@ -39,7 +39,7 @@ export interface AppContext {
 // 桥：路径段 → 头 + url 重写；实例 id 经 req.feathers.route 放回 params.route.__id
 // （rest 层会把 lookup 出的 __id 从 params.route 剥离，而 req.feathers 在 params 组装时展开在其后）。
 const CUSTOM_METHOD_ROUTES = [
-  { re: /^(\/jobs\/[^/]+)\/(fit|offset|bias)$/, withId: true },
+  { re: /^(\/jobs\/[^/]+)\/(fit|offset|bias|prefs)$/, withId: true },
   { re: /^(\/api\/inbox)\/(commit)$/, withId: false },
   { re: /^(\/api\/inbox\/[^/]+)\/(align|reopen)$/, withId: true },
   { re: /^(\/quickcuts)\/(llm_test|llm_status|analyze)$/, withId: false },
@@ -85,10 +85,12 @@ export function createApp({ queue, configRef, inbox = null, refs = {} }: { queue
     io.engine.use(auth.middleware());
   }));
 
-  app.use('jobs', new JobsService({ queue }), { methods: ['find', 'get', 'create', 'fit', 'offset', 'bias'], events: ['progress'] });
+  app.use('jobs', new JobsService({ queue }), { methods: ['find', 'get', 'create', 'fit', 'offset', 'bias', 'prefs'], events: ['progress'] });
   // 快剪：对已出片任务剪 ~30s 短片；轻任务走服务内部串行通道，不挤主队列
   const quickcuts = new QuickcutService({ queue, configRef });
   ctx.quickcuts = quickcuts;
+  // 出片后自动快剪的回链：queue（JobQueue）在 job done 时经它建 quickcut（QueueLike 不强制该字段）
+  (queue as QueueLike & { quickcuts?: QuickcutService | null }).quickcuts ??= quickcuts;
   app.use('quickcuts', quickcuts, { methods: ['find', 'get', 'create', 'analyze', 'llm_status', 'llm_test'] });
   app.use('api/inbox', new InboxService(ctx), { methods: ['find', 'remove', 'commit', 'align', 'reopen'] });
   app.use('api/fits', new FitsService({ configRef }), { methods: ['find', 'create'] });

@@ -83,6 +83,8 @@ export interface JobParams {
   lut: string | null; // null = 按 probe 决策自动；'none' = 显式不套
   offset_seconds: number | null;
   bias_seconds: number | null; // 时间轴整体平移（正 = 数据延后），null = 用全局 global_bias_seconds
+  audio_volume: number | null; // 成片原声音量倍率（每条覆盖），null = 用全局 audio_volume
+  quickcut: boolean | null; // 出片后自动快剪（每条覆盖），null = 用全局 quickcut_auto
   direct: boolean;
   // 多段合并：同一次录制被相机切段且共用同一 FIT 时，按拍摄时间排序，逐段处理后拼接
   segments: { video: string; origin?: string | null; origin_size?: number | null; origin_mtime?: number | null }[] | null;
@@ -156,6 +158,8 @@ export interface ActpipeConfig {
   volume_whitelist: string[];
   cache: { ttl_days: number; max_gb: number };
   notify_sound: string;
+  audio_volume: number; // 成片原声音量倍率：1 = 音频流拷贝零改动；其余重编码 AAC 192k
+  quickcut_auto: boolean; // inbox commit 默认勾选「出片后自动快剪」（每条可在确认页覆盖）
   auth: { password_hash: string | null };
   // BYOK LLM（快剪 skill runner 用）；null/缺省 = 自动探测本机 LM Studio，字段见 server/llm.ts
   llm?: import('./server/llm.ts').LlmConfig | null;

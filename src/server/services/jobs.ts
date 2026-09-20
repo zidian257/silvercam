@@ -17,6 +17,7 @@ export interface QueueLike {
   attachFit(id: string, fitPath: string): unknown;
   setOffset(id: string, offsetSeconds: number): unknown;
   realign(id: string, biasSeconds: number): unknown;
+  updatePrefs(id: string, prefs: { skin?: string; lut?: string | null }): unknown;
 }
 
 // /jobs 任务资源：列表摘要/详情/创建 + custom methods fit/offset/bias
@@ -39,6 +40,8 @@ export class JobsService {
       skin: j.params.skin,
       fit: !!(j.params.fit && j.params.fit !== 'none'),
       bias_seconds: j.params.bias_seconds ?? null,
+      // 出片后会自动快剪的任务（dash 列表标记；无 FIT 的任务永不自动快剪）
+      quickcut: !!(j.params.fit && j.params.fit !== 'none') && !!(j.params.quickcut ?? this.queue.config?.quickcut_auto ?? false),
       progress: j.progress,
       error: j.error,
       output: j.artifacts?.output ?? null,
@@ -87,6 +90,22 @@ export class JobsService {
     }
     try {
       return this.queue.realign(params.route!.__id, body.bias_seconds);
+    } catch (e) {
+      throw new BadRequest((e as Error).message);
+    }
+  }
+
+  // studio 预览选择回写（皮肤/LUT）：只写给出的键，不重跑任务；队列错误同 bias 一律 400
+  async prefs(data: any, params: Params) {
+    const body = data ?? {};
+    if ('skin' in body && typeof body.skin !== 'string') throw new BadRequest('skin 必须是字符串');
+    if ('lut' in body && body.lut !== null && typeof body.lut !== 'string') throw new BadRequest('lut 必须是字符串或 null');
+    const patch: { skin?: string; lut?: string | null } = {};
+    if ('skin' in body) patch.skin = body.skin;
+    if ('lut' in body) patch.lut = body.lut;
+    if (!Object.keys(patch).length) throw new BadRequest('skin/lut 至少给一个');
+    try {
+      return this.queue.updatePrefs(params.route!.__id, patch);
     } catch (e) {
       throw new BadRequest((e as Error).message);
     }

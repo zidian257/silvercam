@@ -28,7 +28,7 @@ const member = (id: string, over: Record<string, any> = {}) => ({
 });
 
 const selOf = (members: { id: string }[], over: Record<string, any> = {}) => ({
-  checked: true, skin: 'topline', lut: '', fit: '/fits/a.fit',
+  checked: true, skin: 'topline', lut: '', fit: '/fits/a.fit', volume: '', quickcut: true,
   memberIds: members.map((m) => m.id), ...over,
 });
 

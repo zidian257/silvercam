@@ -36,6 +36,8 @@ export const DEFAULTS: ActpipeConfig = {
   volume_whitelist: [], // volume names or UUIDs; empty = accept any camera-fingerprinted volume
   cache: { ttl_days: 14, max_gb: 20 },
   notify_sound: 'Glass',
+  audio_volume: 1.0, // 成片原声音量倍率；=1 时保持 -c:a copy 零改动路径
+  quickcut_auto: true, // inbox commit 的「出片后自动快剪」默认值
   // 全站鉴权：password_hash 非空即开启（actpipe passwd <密码> 设置）；公网映射前务必设置
   auth: { password_hash: null },
   // BYOK LLM（快剪 skill runner 用）：null = 自动探测本机 LM Studio；字段见 src/server/llm.ts

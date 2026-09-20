@@ -125,7 +125,7 @@ actpipe config --set dlog_policy always_lut              # 改全局配置
 
 对已出片任务一键剪 ~30s 短片：事件从数据里长出来（片头片尾/显著停顿/最长巡航/极速/功率峰/GPS 折返……不套死模板），L0 六槽兜底直接可出片；
 默认再经 L1——内嵌 pi agent（BYOK，默认本机 LM Studio，可换 DeepSeek 等云端）按 `skills/quickcut/SKILL.md` 导演圈幕，工具只有 ffmpeg + commit_cuts（物理校验护栏），任何一环失败一律回退 L0。
-dash 任务行发起，全程日志可查；CLI：`actpipe quickcut analyze|render <job_id>`。完整设计见 requirements.md「快剪」节。
+dash 任务行发起（任务带「快剪」标记/pill），全程日志可查；inbox commit 也可勾选「出片后自动快剪」（全局默认 `quickcut_auto: true`）；CLI：`actpipe quickcut analyze|render <job_id>`。完整设计见 requirements.md「快剪」节。
 
 ## 模块独立调试（不起 server）
 
@@ -151,6 +151,8 @@ node --experimental-strip-types bin/actpipe.ts watch --simulate <dir>        # �
 | `dlog_policy` | `ask` | `always_lut` / `never_lut` / `ask`（10-bit HEVC 弹原生确认，按档位记忆） |
 | `default_lut` | `dlogm_rec709` | LUT 名（`luts/` 目录或 `luts` 映射），支持多预设；`luts` 映射值可写链式 `"a+b"`（依次套用，如 `dlogm_rec709+grading_mei` = 先 D-Log M 还原再叠大师滤镜），inbox/studio 下拉与 `/preview` 同样接受链式名 |
 | `global_bias_seconds` | `0` | 读数系统性偏早/偏晚时的常数兜底 |
+| `audio_volume` | `1.0` | 成片音量倍率（0 = 静音；=1 时音频直通 `-c:a copy` 不重编码，其余值 `-af volume` + aac 192k）；inbox 可按录制覆盖 |
+| `quickcut_auto` | `true` | 出片后自动建快剪记录（无 FIT 纯拷贝不触发，完成有系统通知）；inbox 可按录制覆盖 |
 | `fit_autopick` | `ask` | `newest_in_dir` 时从 `fit_dirs` 取最新 .fit 免弹窗 |
 | `fit_library_dir` | `~/.config/actpipe/fits` | inbox 的 FIT 下拉库目录；扫描带缓存，按时间重叠给每条素材自动预选；下拉里的「载入 .fit 文件…」即上传进此目录（`POST /api/fits`），解析失败不入库 |
 | `raw_subdir` | `raw` | 无 FIT 纯拷贝的输出子目录（`<output_dir>/<日期>/raw/原名.MP4`，不转码） |

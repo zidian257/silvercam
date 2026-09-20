@@ -2,7 +2,7 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { getJson, postJson, api } from '../../lib/api.ts';
   import {
-    fmtDur, groupItems, gkey, sigOf, mergeGroupsNow, buildDecisions, commitSummary, lutLabel,
+    fmtDur, groupItems, gkey, sigOf, mergeGroupsNow, buildDecisions, commitSummary, lutLabel, VOLUME_OPTIONS,
   } from '../../lib/inbox.ts';
   import PendingGroup from '../../lib/components/PendingGroup.svelte';
   import ResolvedItem from '../../lib/components/ResolvedItem.svelte';
@@ -27,12 +27,16 @@
   interface PreAlign {
     fit: string;
     bias_seconds: number;
+    skin?: string | null;
+    lut?: string | null;
   }
   interface Decision {
     skin?: string | null;
     lut?: string | null;
     fit?: string | null;
     bias_seconds?: number | null;
+    audio_volume?: number | null;
+    quickcut?: boolean | null;
   }
   interface InboxItem {
     id: string;
@@ -52,12 +56,14 @@
     volume?: { name?: string | null } | null;
     job_id?: string | null;
   }
-  // 组选择模型（selMap 的值；{ checked, skin, lut, fit, memberIds } —— 直接改字段后调 onSelChange 持久化）
+  // 组选择模型（selMap 的值；{ checked, skin, lut, fit, volume, quickcut, memberIds } —— 直接改字段后调 onSelChange 持久化）
   interface GroupSel {
     checked: boolean;
     skin: string;
     lut: string;
     fit: string;
+    volume: string; // '' = 默认（跟随全局 audio_volume）
+    quickcut: boolean;
     memberIds: string[];
   }
   interface SelectOption {
@@ -107,6 +113,8 @@
     skin?: string;
     lut?: string | null;
     fit?: string;
+    audio_volume?: number;
+    quickcut?: boolean;
     merge?: boolean;
   }
   interface LoadFitCtx {
@@ -123,6 +131,8 @@
   let lutLabels = $state<Record<string, string>>({});
   let bulkSkin = $state('');
   let bulkLut = $state('');
+  let bulkVolume = $state(''); // '' = 跟随全局 audio_volume
+  let bulkQuickcut = $state(true);
   let statusMsg = $state('');
   let statusErr = $state(false);
   let mergeChoice = $state<{ groups: { fit: string; n: number }[]; resolve: (choice: string) => void } | null>(null); // 合并确认弹窗
@@ -157,13 +167,16 @@
       selMap.set(key, {
         // 重新编辑拉回待处理的组默认不勾选，避免被批量操作误带进去
         checked: !members.some((m) => m.decision),
-        skin: f0.decision?.skin ?? bulkSkin,
-        lut: f0.decision?.lut ?? bulkLut,
+        // 皮肤/LUT 预选取组内第一个在 studio 校准过的成员，其次沿用上次的提交决策
+        skin: members.find((m) => m.pre_align?.skin)?.pre_align?.skin ?? f0.decision?.skin ?? bulkSkin,
+        lut: members.find((m) => m.pre_align?.lut)?.pre_align?.lut ?? f0.decision?.lut ?? bulkLut,
         // FIT 预选取组内第一个有建议/已校准的成员（首段可能是 FIT 开始前的几秒钟废段）
         fit: members.find((m) => m.pre_align)?.pre_align?.fit
           ?? members.find((m) => m.decision?.fit)?.decision?.fit
           ?? members.find((m) => m.fit_suggestion)?.fit_suggestion
           ?? 'none',
+        volume: f0.decision?.audio_volume != null ? String(f0.decision.audio_volume) : bulkVolume,
+        quickcut: f0.decision?.quickcut ?? bulkQuickcut,
         memberIds: members.map((m) => m.id),
       });
     }
@@ -191,6 +204,8 @@
     ]);
     skins = sk;
     bulkSkin = cfg.skin;
+    bulkVolume = cfg.audio_volume === 1 ? '' : String(cfg.audio_volume);
+    bulkQuickcut = cfg.quickcut_auto ?? true;
     lutLabels = Object.fromEntries(luts.filter((l) => l.label).map((l) => [l.name, l.label])) as Record<string, string>;
     lutOptions = [
       { value: '', label: '自动（按 D-Log 策略）' },
@@ -239,6 +254,8 @@
       if (!s.checked) continue;
       s.skin = bulkSkin;
       s.lut = bulkLut;
+      s.volume = bulkVolume;
+      s.quickcut = bulkQuickcut;
     }
     refresh(true);
   }
@@ -350,12 +367,20 @@
         {#each lutOptions as o}<option value={o.value}>{o.label}</option>{/each}
       </select>
     </label>
+    <label class="field" title="成片音量：默认=跟随全局设置；静音=去掉原声"><span>音量</span>
+      <select bind:value={bulkVolume}>
+        {#each VOLUME_OPTIONS as o}<option value={o.value}>{o.label}</option>{/each}
+      </select>
+    </label>
+    <label class="field" title="出片后自动用成片跑一次快剪（可在「快剪」页继续微调）"><span>快剪</span>
+      <input type="checkbox" bind:checked={bulkQuickcut}>
+    </label>
   </div>
   <div class="br">
     {#if mergeHint}<span class="mergehint" title="这些条目选择了同一个 FIT（且皮肤/LUT 一致），提交时会询问是否合并输出为一条视频">{mergeHint}</span>{/if}
     {#if statusMsg}<span class="statusmsg" class:err={statusErr}>{statusMsg}</span>{/if}
     {#if selCount > 0}<span class="selcount">已选 {selCount} 段</span>{/if}
-    <button class="btn" onclick={applyBulk} disabled={selCount === 0} title="把上面的皮肤/LUT 选择覆盖到所有勾选的条目">应用到所选</button>
+    <button class="btn" onclick={applyBulk} disabled={selCount === 0} title="把上面的皮肤/LUT/音量/快剪选择覆盖到所有勾选的条目">应用到所选</button>
     <button class="btn" onclick={() => selAll(true)}>全选</button>
     <button class="btn" onclick={() => selAll(false)}>全不选</button>
     <button class="btn primary" onclick={() => commit('process')} disabled={selCount === 0} title="勾选的条目按各自的皮肤/LUT 设置进入自动化队列（ingest→probe→fit→render→compose）">开始处理所选</button>
