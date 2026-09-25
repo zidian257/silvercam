@@ -51,8 +51,6 @@ export async function startServer({ port = null, withWatcher = true, log = conso
   const app = createApp({ queue, configRef, inbox, refs });
   const auth = app.get('auth'); // app.js 装配时挂上，upgrade 分发前的鉴权判定用
 
-  cleanCache({ ttlDays: config.cache.ttl_days, maxGb: config.cache.max_gb, log });
-
   let watcher = null;
   if (withWatcher) {
     watcher = new VolumeWatcher({ config, store, log });
@@ -125,6 +123,9 @@ export async function startServer({ port = null, withWatcher = true, log = conso
   log(`[server] actpipe listening on http://127.0.0.1:${(server.address() as AddressInfo).port} (store: ${storeKind()})`);
   // 原生 WS /jobs/:id/progress 与 socket.io 在同一 server 上按 path 分发（见 realtime.js）
   attachProgressWebSocket(server, { queue, auth });
+  // 缓存清理放 listen 之后异步跑：9 万+ 帧的体积遍历不能拖住启动
+  cleanCache({ ttlDays: config.cache.ttl_days, maxGb: config.cache.max_gb, log })
+    .catch((e) => log(`[cache] 清理失败：${(e as Error).message}`));
   return { server, queue, configRef, watcher, inbox, pregen };
 }
 

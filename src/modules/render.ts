@@ -277,19 +277,26 @@ export async function cleanCache({ ttlDays = 14, maxGb = 20, log = () => {} }: {
 } = {}): Promise<void> {
   if (!fs.existsSync(paths.renderCache)) return;
   const now = Date.now();
-  const entries = fs.readdirSync(paths.renderCache).map((name) => {
+  // TTL 判定只需 cache_index.json 的创建时间，先删过期项：避免为将删的目录白算体积
+  const remaining: { name: string; dir: string; createdAt: number; size: number }[] = [];
+  for (const name of fs.readdirSync(paths.renderCache)) {
     const dir = path.join(paths.renderCache, name);
     const index = readJson(path.join(dir, 'cache_index.json'));
-    return { name, dir, createdAt: index?.created_at ? Date.parse(index.created_at) : 0, size: dirSize(dir) };
-  });
-  for (const e of entries) {
-    if (ttlDays > 0 && now - e.createdAt > ttlDays * 86400_000) {
-      log(`[cache] TTL 过期清理 ${e.name}`);
-      fs.rmSync(e.dir, { recursive: true, force: true });
+    const createdAt = index?.created_at ? Date.parse(index.created_at) : 0;
+    if (ttlDays > 0 && now - createdAt > ttlDays * 86400_000) {
+      log(`[cache] TTL 过期清理 ${name}`);
+      fs.rmSync(dir, { recursive: true, force: true });
+    } else {
+      remaining.push({ name, dir, createdAt, size: 0 });
     }
   }
-  const remaining = entries.filter((e) => fs.existsSync(e.dir)).sort((a, b) => a.createdAt - b.createdAt);
-  let total = remaining.reduce((a, e) => a + e.size, 0);
+  // 容量判定需要全量体积：9 万+ PNG 的遍历必须异步，同步 stat 会把事件循环冻住数分钟
+  remaining.sort((a, b) => a.createdAt - b.createdAt);
+  let total = 0;
+  for (const e of remaining) {
+    e.size = await dirSize(e.dir);
+    total += e.size;
+  }
   const cap = maxGb * 1024 ** 3;
   while (total > cap && remaining.length) {
     const oldest = remaining.shift()!;
@@ -299,14 +306,19 @@ export async function cleanCache({ ttlDays = 14, maxGb = 20, log = () => {} }: {
   }
 }
 
-function dirSize(dir: string): number {
+async function dirSize(dir: string): Promise<number> {
   let total = 0;
   try {
-    for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const f of entries) {
       const p = path.join(dir, f.name);
-      if (f.isDirectory()) total += dirSize(p);
-      else total += fs.statSync(p).size;
+      if (f.isDirectory()) total += await dirSize(p);
     }
+    // 同目录文件并发 stat（帧序列是扁平大目录，串行 await 会拖成秒级）
+    const sizes = await Promise.all(
+      entries.filter((f) => !f.isDirectory()).map((f) => fs.promises.stat(path.join(dir, f.name)).then((s) => s.size, () => 0)),
+    );
+    for (const s of sizes) total += s;
   } catch {}
   return total;
 }
