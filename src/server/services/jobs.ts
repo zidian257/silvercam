@@ -64,6 +64,14 @@ export class JobsService {
 
   async fit(data: any, params: Params) {
     const body = data ?? {};
+    // fit='none' = 摘掉 FIT（误自动配对/素材本无数据）：纯拷贝或纯拼接，无需对齐
+    if (body.fit === 'none') {
+      try {
+        return this.queue.attachFit(params.route!.__id, 'none');
+      } catch (e) {
+        throw new NotFound((e as Error).message);
+      }
+    }
     if (!body.fit || !fs.existsSync(body.fit)) throw new BadRequest('fit file not found');
     try {
       return this.queue.attachFit(params.route!.__id, body.fit);

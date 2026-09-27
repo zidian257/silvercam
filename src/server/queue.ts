@@ -688,6 +688,8 @@ export class JobQueue extends EventEmitter {
   async #runMergeJob(job: Job, startedAt: number): Promise<void> {
     const segs = job.params.segments!;
     const total = segs.length;
+    // 无 FIT 的合并 = 纯拼接：probe/LUT 保留（D-Log 仍需还原），fit/render 两步整段跳过
+    const noFit = !job.params.fit || job.params.fit === 'none';
     job.artifacts.segments ??= segs.map(() => ({}));
     let sharedLut: LutDecision | null = job.artifacts.merge_lut ?? null; // 首段决策后全段复用
 
@@ -811,6 +813,13 @@ export class JobQueue extends EventEmitter {
       tasks.push({
         name: key('fit'), lane: 'prep', deps: fitDeps,
         run: async () => {
+          if (noFit) {
+            // 纯拼接：无 FIT 可锚，直接记 done 放行后续 compose
+            this.#markStep(job, key('fit'));
+            this.#save(job);
+            stageDone(i, 'prep');
+            return;
+          }
           // 手动 offset 只锚首段，后续按各段时长顺推；从 artifacts 累加，断点续跑也正确
           let manualOffset: number | null = job.params.offset_seconds ?? null;
           if (manualOffset != null) {
@@ -845,6 +854,14 @@ export class JobQueue extends EventEmitter {
           await this.#waitHeavyLane(job, signal);
           segProg[i].render = 0;
           report();
+          if (noFit) {
+            // 纯拼接：无仪表盘可渲，空帧序列交给 compose（只套 LUT）
+            art.frames = { empty: true, framesDir: null, pattern: null, fps: this.config.overlay_fps, width: null, height: null, first_frame: 0, delay_s: 0 };
+            this.#markStep(job, key('render'));
+            this.#save(job);
+            stageDone(i, 'render');
+            return;
+          }
           const probe = art.probe!;
           const offset = art.session!.offset_seconds ?? 0;
           const delayS = Math.max(0, -offset); // 视频先于 FIT 开始：overlay 延后这么久入场
