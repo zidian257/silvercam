@@ -16,8 +16,8 @@ import path from 'node:path';
 import { BadRequest, NotFound } from '@feathersjs/errors';
 import { paths, ensureDirs } from '../lib/paths.ts';
 import { readJson, run, writeJsonAtomic } from '../lib/util.ts';
-import { annotatePauseAudio, assembleHeuristic, detectEvents, normalizeSamples, planFromCuts, quickcutOutputPathFor, renderQuickcut } from '../modules/quickcut.ts';
-import type { QuickcutPlan, QuickcutSegment } from '../modules/quickcut.ts';
+import { annotatePauseAudio, assembleHeuristic, assembleHeuristicAv, detectAvEvents, detectEvents, normalizeSamples, planFromCuts, quickcutOutputPathFor, renderQuickcut } from '../modules/quickcut.ts';
+import type { QuickcutEvent, QuickcutPlan, QuickcutSegment } from '../modules/quickcut.ts';
 import * as interact from '../modules/interact.ts';
 import { resolveLlm, complete } from './llm.ts';
 import type { Job, SegmentArtifacts } from '../types.ts';
@@ -41,6 +41,7 @@ export interface QuickcutRecord {
   cuts: QuickcutCut[] | null; // 创建入参：外部指定的精确剪辑点；null = 服务端兜底粗剪
   use_llm: boolean;  // 创建入参：是否尝试 L1 抛光（cuts 存在时忽略）
   llm_used: boolean; // 结果：L1 实际是否生效（未配置/不可达/agent 缺失/失败都为 false）
+  target_seconds: number | null; // 创建入参：目标成片时长（null = 默认 30s，上限 180s）
   state: QuickcutState;
   percent: number;
   plan: QuickcutPlan | null;
@@ -70,7 +71,13 @@ export interface QuickcutDeps {
   render?: QuickcutRenderFn;
   resolveLlmFn?: typeof resolveLlm; // 测试注入 stub，避免触碰真实 LLM 端点
   completeFn?: typeof complete;     // llm_test 的 ping 调用口，测试注入 stub 禁真网络
+  detectAvFn?: typeof detectAvEvents; // 无 FIT 素材的音视频事件探测，测试注入 stub 免跑 ffmpeg
 }
+
+// 目标时长的合法区间：下限防止剪出废片，上限与 quickcut-agent 的 MAX_TOTAL_S 护栏一致
+const MIN_TARGET_S = 10;
+const MAX_TARGET_S = 180;
+const DEFAULT_TARGET_S = 30;
 
 // 视频真实时长用 ffprobe 读输出文件本身，不信各段 probe 之和（封装间隙/精度会累计误差）
 async function probeDurationS(file: string): Promise<number> {
@@ -98,17 +105,19 @@ export class QuickcutService {
   render: QuickcutRenderFn;
   resolveLlmFn: typeof resolveLlm;
   completeFn: typeof complete;
+  detectAvFn: typeof detectAvEvents;
   file: string;
   items: QuickcutRecord[];
   lane: Promise<unknown>; // 串行消化通道：上一个任务的 promise 链下一个
 
-  constructor({ queue, configRef, log = console.log, render = renderQuickcut, resolveLlmFn = resolveLlm, completeFn = complete }: QuickcutDeps) {
+  constructor({ queue, configRef, log = console.log, render = renderQuickcut, resolveLlmFn = resolveLlm, completeFn = complete, detectAvFn = detectAvEvents }: QuickcutDeps) {
     this.queue = queue;
     this.configRef = configRef;
     this.log = log;
     this.render = render;
     this.resolveLlmFn = resolveLlmFn;
     this.completeFn = completeFn;
+    this.detectAvFn = detectAvFn;
     ensureDirs();
     this.file = path.join(paths.home, 'quickcuts.json');
     this.items = readJson<QuickcutRecord[]>(this.file, []);
@@ -144,7 +153,7 @@ export class QuickcutService {
     if (typeof body.job_id !== 'string' || !body.job_id) throw new BadRequest('job_id required');
     const job = this.queue.get(body.job_id);
     if (!job) throw new BadRequest(`job not found: ${body.job_id}`);
-    this.prepare(job); // state/output/samples/segments 校验，不满足即 400
+    await this.prepare(job); // state/output/样本（无 FIT 时探测时长）校验，不满足即 400
 
     // 外部指定剪辑点（agent 精剪）；缺省则 run 阶段用兜底组装
     let cuts: QuickcutCut[] | null = null;
@@ -157,12 +166,22 @@ export class QuickcutService {
       cuts = body.cuts;
     }
 
+    let targetSeconds: number | null = null;
+    if (body.target_seconds != null) {
+      const t = Number(body.target_seconds);
+      if (!Number.isFinite(t) || t < MIN_TARGET_S || t > MAX_TARGET_S) {
+        throw new BadRequest(`target_seconds 需在 ${MIN_TARGET_S}–${MAX_TARGET_S} 之间`);
+      }
+      targetSeconds = Math.round(t);
+    }
+
     const rec: QuickcutRecord = {
       id: crypto.randomUUID().slice(0, 8),
       job_id: job.id,
       cuts,
       use_llm: body.use_llm !== false,
       llm_used: false,
+      target_seconds: targetSeconds,
       state: 'queued',
       percent: 0,
       plan: null,
@@ -203,23 +222,30 @@ export class QuickcutService {
     }
   }
 
-  // POST /quickcuts/analyze { job_id }：只分析不渲染——事件菜单 + 兜底计划 + 视频信息。
+  // POST /quickcuts/analyze { job_id, target_seconds? }：只分析不渲染——事件菜单 + 兜底计划 + 视频信息。
   // 快剪 agent 的路标：菜单里 videoS=null 的事件不在任何段覆盖内，不可用于剪辑。
+  // 无 FIT 的任务（纯拷贝）走音视频信号事件（detectAvEvents），segments 恒为单段 offset 0。
   async analyze(data: any) {
     const body = data ?? {};
     if (typeof body.job_id !== 'string' || !body.job_id) throw new BadRequest('job_id required');
     const job = this.queue.get(body.job_id);
     if (!job) throw new BadRequest(`job not found: ${body.job_id}`);
-    const { video, grid, segments } = this.prepare(job);
-    const samples = normalizeSamples(grid.samples, grid.t0_ms);
+    const { video, grid, segments } = await this.prepare(job);
     const videoDurationS = await probeDurationS(video);
+    const t = Number(body.target_seconds);
+    const targetS = Number.isFinite(t) ? Math.max(MIN_TARGET_S, Math.min(MAX_TARGET_S, Math.round(t))) : DEFAULT_TARGET_S;
+    if (!grid) {
+      const events = await this.detectAvFn(video, videoDurationS);
+      return { job_id: job.id, video, videoDurationS, segments, events, plan: assembleHeuristicAv({ events, videoDurationS, targetS }) };
+    }
+    const samples = normalizeSamples(grid.samples, grid.t0_ms);
     return {
       job_id: job.id,
       video,
       videoDurationS,
       segments,
       events: await annotatePauseAudio(detectEvents(samples, { segments, videoDurationS }), video),
-      plan: assembleHeuristic({ samples, segments, videoDurationS }),
+      plan: assembleHeuristic({ samples, segments, videoDurationS, targetS }),
     };
   }
 
@@ -251,8 +277,10 @@ export class QuickcutService {
 
   // 从任务产物推导快剪输入：merged 成片、FIT 样本网格、逐段映射（videoT = fitElapsed − offsetSeconds）。
   // 合并任务读 <dir>/seg<i>/，单段任务读 <dir>/ 本身；seg 的 offset 优先取 artifacts，缺了读 session.json。
+  // 无 FIT（纯拷贝）任务：grid=null，segments 恒为单段 offset 0——时长先取 probe 产物，
+  // 纯拷贝路径不跑 probe 步骤，缺了再 ffprobe 成片本身。
   // create 阶段调用即 400 校验；run 阶段再调一次取数（失败则任务转 failed）。
-  private prepare(job: Job): { video: string; grid: any; segments: QuickcutSegment[] } {
+  private async prepare(job: Job): Promise<{ video: string; grid: any | null; segments: QuickcutSegment[] }> {
     if (job.state !== 'done') throw new BadRequest(`任务 ${job.id} 状态为 ${job.state}，快剪需要已出片（done）任务`);
     const video = job.artifacts?.output;
     if (!video || !fs.existsSync(video)) throw new BadRequest(`任务 ${job.id} 的成片文件不存在（${video ?? '无 output'}）`);
@@ -262,7 +290,12 @@ export class QuickcutService {
     const segDir = (i: number) => (merged ? path.join(job.dir, `seg${i}`) : job.dir);
 
     const grid = readJson(path.join(segDir(0), 'samples.json')) as any; // 各段共享同一 FIT，seg0 即全程样本
-    if (!grid || !Number.isFinite(grid.t0_ms) || !Array.isArray(grid.samples) || !grid.samples.length) {
+    if (!grid) {
+      const probed: unknown = segArts[0]?.probe?.duration;
+      const durationS = typeof probed === 'number' && Number.isFinite(probed) && probed > 0 ? probed : await probeDurationS(video);
+      return { video, grid: null, segments: [{ videoStartS: 0, durationS, offsetSeconds: 0 }] };
+    }
+    if (!Number.isFinite(grid.t0_ms) || !Array.isArray(grid.samples) || !grid.samples.length) {
       throw new BadRequest(`任务 ${job.id} 缺少 FIT 样本（seg0/samples.json），不支持快剪`);
     }
 
@@ -285,18 +318,27 @@ export class QuickcutService {
     try {
       const job = this.queue.get(rec.job_id);
       if (!job) throw new Error(`job not found: ${rec.job_id}`);
-      const { video, grid, segments } = this.prepare(job);
-      this.recLog(rec, `开始：job=${rec.job_id} 视频 ${video}`);
+      const { video, grid, segments } = await this.prepare(job);
+      const targetS = rec.target_seconds ?? DEFAULT_TARGET_S;
+      this.recLog(rec, `开始：job=${rec.job_id} 视频 ${video}（目标 ${targetS}s${grid ? '' : '，无 FIT 走音视频信号'}）`);
 
       // analyzing：外部给了 cuts 就直接采纳；否则 L0 兜底组装圈幕（事件菜单同时备好供 L1 使用）
       rec.state = 'analyzing';
       this.save();
-      const samples = normalizeSamples(grid.samples, grid.t0_ms);
+      const samples = grid ? normalizeSamples(grid.samples, grid.t0_ms) : null;
       const videoDurationS = await probeDurationS(video);
+      // 事件菜单懒算且只算一次：无 FIT 时全片音频扫描不便宜，analyzing 与 refining 共用
+      let eventsCache: QuickcutEvent[] | null = null;
+      const getEvents = async () =>
+        (eventsCache ??= samples
+          ? await annotatePauseAudio(detectEvents(samples, { segments, videoDurationS }), video)
+          : await this.detectAvFn(video, videoDurationS));
       if (rec.cuts) {
         rec.plan = planFromCuts(rec.cuts);
+      } else if (samples) {
+        rec.plan = assembleHeuristic({ samples, segments, videoDurationS, targetS });
       } else {
-        rec.plan = assembleHeuristic({ samples, segments, videoDurationS });
+        rec.plan = assembleHeuristicAv({ events: await getEvents(), videoDurationS, targetS });
       }
       this.save();
       this.recLog(rec, `${rec.cuts ? '外部剪辑点' : 'L0 兜底'}出 ${rec.plan.acts.length} 幕共 ${rec.plan.totalS.toFixed(1)}s（丢弃 ${rec.plan.dropped.length} 幕）`);
@@ -315,8 +357,7 @@ export class QuickcutService {
             if (typeof mod?.refineActsWithAgent !== 'function') {
               this.recLog(rec, 'L1 skill runner 未就绪，沿用 L0 plan');
             } else {
-              const events = await annotatePauseAudio(detectEvents(samples, { segments, videoDurationS }), video);
-              rec.plan = await mod.refineActsWithAgent({ video, videoDurationS, events, plan: rec.plan, llm, log: (m: string) => this.recLog(rec, m) });
+              rec.plan = await mod.refineActsWithAgent({ video, videoDurationS, events: await getEvents(), plan: rec.plan, llm, targetS, log: (m: string) => this.recLog(rec, m) });
               rec.llm_used = true;
               this.recLog(rec, `L1 抛光完成（${llm.describe}）`);
             }

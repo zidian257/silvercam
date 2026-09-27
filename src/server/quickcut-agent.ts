@@ -188,8 +188,9 @@ function buildSystemPrompt(instructions: string): string {
 - 验片由服务端兜底，你的工作到 commit_cuts 为止`;
 }
 
-function buildUserPrompt({ video, videoDurationS, events, plan }: { video: string; videoDurationS: number; events: QuickcutEvent[]; plan: QuickcutPlan }): string {
+function buildUserPrompt({ video, videoDurationS, events, plan, targetS = 30 }: { video: string; videoDurationS: number; events: QuickcutEvent[]; plan: QuickcutPlan; targetS?: number }): string {
   return `视频：${video}（共 ${videoDurationS.toFixed(2)}s）
+目标成片总长 ~${targetS}s（±25% 弹性，叙事优先，别为压时长砍交代和高潮）
 
 # 事件菜单（analyze 结果）
 ${eventsDigest(events)}
@@ -208,7 +209,7 @@ function hardStepsDigest(events: QuickcutEvent[]): string {
     if ((e.type === 'head' || e.type === 'tail') && e.fromVideoS != null && e.toVideoS != null && e.toVideoS - e.fromVideoS > 20) {
       lines.push(`- ${e.type === 'head' ? '片头' : '片尾'}区间 ${e.fromVideoS.toFixed(0)}–${e.toVideoS.toFixed(0)}s：先在 ${probes(e.fromVideoS, e.toVideoS)}s 四处抽帧探索，再定${e.type === 'head' ? '开头' : '收尾'}窗口`);
     }
-    if (e.type === 'pause' && e.audio?.talk && e.audio.fromS != null && e.audio.toS != null) {
+    if ((e.type === 'pause' || e.type === 'speech') && e.audio?.talk && e.audio.fromS != null && e.audio.toS != null) {
       const beatFrom = Math.max(e.audio.fromS, e.audio.toS - 6);
       lines.push(`- 停顿有人声（${e.audio.fromS.toFixed(0)}–${e.audio.toS.toFixed(0)}s）：对话 beat 取人声区收尾——在 ${beatFrom.toFixed(0)}–${e.audio.toS.toFixed(0)}s 附近抽帧微调，取 ≤6s（告别/笑声/重新上车的情绪落点；画面实在不可用才放弃，提交时写明原因）`);
     }
@@ -257,6 +258,7 @@ export async function refineActsWithAgent(opts: {
   events: QuickcutEvent[];    // analyze 的事件菜单
   plan: QuickcutPlan;         // L0 兜底计划（失败回退对象）
   llm: ResolvedLlm;
+  targetS?: number;           // 目标成片时长（创作指引，写进 prompt；护栏仍是 MAX_TOTAL_S）
   log?: (msg: string) => void;
   agentFactory?: (systemPrompt: string, tools: any[]) => QuickcutAgentLike; // 测试注入口
   workdir?: string;           // 测试注入口（默认 mkdtemp）
@@ -301,7 +303,7 @@ export async function refineActsWithAgent(opts: {
       agent = a;
     }
     log(`[quickcut] L1 启动（${llm.describe}）：skill 驱动自由圈幕，最多 ${MAX_TURNS} 轮`);
-    await agent.prompt(buildUserPrompt({ video, videoDurationS, events, plan }));
+    await agent.prompt(buildUserPrompt({ video, videoDurationS, events, plan, targetS: opts.targetS }));
 
     if (!committedRef.cuts) {
       log('[quickcut] L1 未提交剪辑点（轮数用尽或 agent 放弃），沿用 L0 计划');

@@ -1,6 +1,6 @@
 ---
 name: quickcut
-description: 把 actpipe 已出片的运动相机素材（带 FIT 仪表盘 overlay 的成片）剪成 ~30s 短片。当用户要求快剪、剪短片、剪骑行/运动视频，且本机 actpipe server 在运行时使用。通过 actpipe CLI 的 analyze/render 接口驱动，用抽帧看画面来做镜头判断。
+description: 把 actpipe 已出片的素材（带 FIT 仪表盘 overlay 的成片，或无 FIT 的纯拷贝素材）剪成短片（默认 ~30s，调用方可指定目标时长、最长 3 分钟护栏）。当用户要求快剪、剪短片、剪骑行/运动/vlog 视频，且本机 actpipe server 在运行时使用。通过 actpipe CLI 的 analyze/render 接口驱动，用抽帧看画面来做镜头判断。
 ---
 
 # 快剪（actpipe quickcut）
@@ -40,6 +40,8 @@ actpipe quickcut analyze <job_id>
 - `video` / `videoDurationS` / `segments`。
 
 菜单里有什么素材就讲什么故事：平路没有登顶，场地绕圈没有折返点——缺席即信息，不要硬凑。
+
+**无 FIT 素材（纯拷贝）**：菜单只有片头/人声段落/片尾——人声段落的 beat 同样取收尾（下面硬流程第 2 条适用）；其余叙事靠抽帧探索：先用 ffprobe 拿时长，在事件之间的空白区按均匀网格抽帧扫一遍（如每 5–10 分钟一组），找到有画面变化的段落再加密。目标时长在调用方给出时按其圈幕（休闲 vlog 常见 60–120s）。
 
 ### 2. 圈候选
 

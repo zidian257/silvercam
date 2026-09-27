@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  normalizeSamples, fitToVideo, detectEvents, assembleHeuristic, planFromCuts,
+  normalizeSamples, fitToVideo, detectEvents, assembleHeuristic, assembleHeuristicAv, planFromCuts,
   renderQuickcut, quickcutOutputPathFor, scanPauseAudio, annotatePauseAudio,
 } from '../../src/modules/quickcut.ts';
 import type { NormalizedSample, QuickcutEvent } from '../../src/modules/quickcut.ts';
@@ -187,6 +187,47 @@ test('assembleHeuristic: 视频与 FIT 同步起止时片头片尾两幕降级�
 
 test('assembleHeuristic: 空样本直接报错', () => {
   assert.throws(() => assembleHeuristic({ samples: [], segments: SEGMENTS, videoDurationS: 100 }), /FIT 样本/);
+});
+
+test('assembleHeuristic: targetS=120 时槽位时长等比放大（单槽钳 24s 上限）', () => {
+  const plan = assembleHeuristic({ samples: FIXTURE.samples, segments: SEGMENTS, videoDurationS: VIDEO_DURATION, targetS: 120 });
+  assert.equal(plan.acts.length, 6);
+  // 4x 缩放：出发 4→16s、极速 8→24s（钳顶）；总长显著超过默认 30s
+  const byKey = Object.fromEntries(plan.acts.map((a) => [a.key, a]));
+  assert.ok(Math.abs(byKey.departure.end - byKey.departure.start - 16) < 0.5, `出发 ${byKey.departure.end - byKey.departure.start}`);
+  assert.ok(Math.abs(byKey.speed.end - byKey.speed.start - 24) < 0.5, `极速 ${byKey.speed.end - byKey.speed.start}`);
+  assert.ok(plan.totalS > 60 && plan.totalS <= 130, `总时长 ${plan.totalS}`);
+});
+
+// ---------- assembleHeuristicAv：无 FIT 音视频信号粗剪 ----------
+
+const AV_EVENTS = [
+  { type: 'head' as const, fitS: null, videoS: 0, windowS: 4, score: 50, desc: '片头', fromVideoS: 0, toVideoS: 60 },
+  { type: 'tail' as const, fitS: null, videoS: 3600, windowS: 4, score: 50, desc: '片尾', fromVideoS: 3540, toVideoS: 3600 },
+  { type: 'speech' as const, fitS: null, videoS: 500, windowS: 8, score: 100, desc: '人声 40s（峰值 -18dB）', fromVideoS: 480, toVideoS: 520, audio: { talk: true, fromS: 480, toS: 520, peakDb: -18 } },
+  { type: 'speech' as const, fitS: null, videoS: 2000, windowS: 8, score: 60, desc: '人声 20s（峰值 -20dB）', fromVideoS: 1990, toVideoS: 2010, audio: { talk: true, fromS: 1990, toS: 2010, peakDb: -20 } },
+];
+
+test('assembleHeuristicAv: 人声 beat 取人声区收尾，幕按时间序，时长在目标弹性内', () => {
+  const plan = assembleHeuristicAv({ events: AV_EVENTS, videoDurationS: 3600, targetS: 30 });
+  assert.equal(plan.acts[0].key, 'departure');
+  assert.equal(plan.acts[plan.acts.length - 1].key, 'finish');
+  const speechActs = plan.acts.filter((a) => a.label === '人声');
+  assert.equal(speechActs.length, 2);
+  assert.equal(speechActs[0].end, 520); // beat = 人声区收尾
+  assert.ok(plan.totalS >= 20 && plan.totalS <= 40, `总时长 ${plan.totalS}`);
+  for (let i = 1; i < plan.acts.length; i++) assert.ok(plan.acts[i].start >= plan.acts[i - 1].start, '幕按时间序');
+});
+
+test('assembleHeuristicAv: 人声填不满预算时等距补位；targetS=120 比 30 出更多幕', () => {
+  const small = assembleHeuristicAv({ events: AV_EVENTS, videoDurationS: 3600, targetS: 30 });
+  const big = assembleHeuristicAv({ events: AV_EVENTS, videoDurationS: 3600, targetS: 120 });
+  assert.ok(big.acts.length > small.acts.length, `${big.acts.length} vs ${small.acts.length}`);
+  assert.ok(big.totalS > small.totalS, `${big.totalS} vs ${small.totalS}`);
+  // 完全无人声：全靠等距补位 + 片头片尾
+  const noSpeech = assembleHeuristicAv({ events: AV_EVENTS.filter((e) => e.type !== 'speech'), videoDurationS: 3600, targetS: 60 });
+  assert.ok(noSpeech.acts.some((a) => a.reason.includes('等距补位')));
+  assert.ok(noSpeech.totalS > 30, `总时长 ${noSpeech.totalS}`);
 });
 
 // ---------- planFromCuts：外部精确剪辑点 ----------

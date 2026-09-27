@@ -70,14 +70,20 @@ describe('QuickcutPanel', () => {
     expect(hist.textContent).not.toContain('失败'); // j2 与最新一条都不在历史里
   });
 
-  it('快剪 30s 一键提交：默认 AI 优选开，提交带上 jobId 与 useLlm', async () => {
+  it('一键提交：默认 AI 优选开 + 目标 30s，可改 120s，提交带上 jobId/useLlm/targetS', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(QuickcutPanel, { props: { jobId: 'j1', records: [], onSubmit } });
     const ai = document.querySelector<HTMLInputElement>('input[type=checkbox]')!;
     expect(ai.checked).toBe(true);
     await fireEvent.click(ai); // 关掉 AI 优选
     await fireEvent.click(screen.getByText('快剪 30s'));
-    expect(onSubmit).toHaveBeenCalledWith('j1', false);
+    expect(onSubmit).toHaveBeenCalledWith('j1', false, 30);
+
+    // 切到 120s 再提交
+    const sel = document.querySelector<HTMLSelectElement>('select.sel')!;
+    await fireEvent.change(sel, { target: { value: '120' } });
+    await fireEvent.click(screen.getByText('快剪 120s'));
+    expect(onSubmit).toHaveBeenCalledWith('j1', false, 120);
   });
 
   it('AI 优选旁的小字随 llmStatus：configured 显示将用模型，否则提示仅按数据优选', async () => {

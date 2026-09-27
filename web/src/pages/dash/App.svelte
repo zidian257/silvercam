@@ -131,8 +131,8 @@
     openQuickcuts = { ...openQuickcuts, [id]: !openQuickcuts[id] };
   }
 
-  async function onQuickcutSubmit(jobId: string, useLlm: boolean) {
-    await postJson('/quickcuts', { job_id: jobId, use_llm: useLlm });
+  async function onQuickcutSubmit(jobId: string, useLlm: boolean, targetS: number) {
+    await postJson('/quickcuts', { job_id: jobId, use_llm: useLlm, target_seconds: targetS });
     await loadQuickcuts();
     ensureQcWatch();
   }

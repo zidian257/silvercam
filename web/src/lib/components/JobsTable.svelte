@@ -33,7 +33,7 @@
     quickcuts?: QuickcutRecord[];
     openQuickcuts?: Record<string, boolean>;
     onToggleQuickcut?: (id: string) => void;
-    onQuickcutSubmit?: (jobId: string, useLlm: boolean) => Promise<void> | void;
+    onQuickcutSubmit?: (jobId: string, useLlm: boolean, targetS: number) => Promise<void> | void;
     llmStatus?: LlmStatus | null; // dash 挂载时拉的 llm_status（透传给 QuickcutPanel）
   }
   let {
@@ -108,7 +108,7 @@
               {#if j.state === 'failed'}<button class="btn" onclick={() => onRetry(j.id)}>重试</button>{/if}
               {#if j.state === 'awaiting_fit'}<button class="btn" onclick={() => onFit(j.id)}>补 FIT</button>{/if}
               {#if j.fit}<a class="btn icon" href="/studio?job={j.id}" title="对齐：打开 studio 看着视频画面校准时间轴"><SlidersHorizontal size={16} /></a>{/if}
-              {#if canQuickcut(j)}<button class="btn icon" title="快剪 30s" onclick={() => onToggleQuickcut(j.id)}><Scissors size={16} /></button>{/if}
+              {#if canQuickcut(j)}<button class="btn icon" title="快剪" onclick={() => onToggleQuickcut(j.id)}><Scissors size={16} /></button>{/if}
             </div>
           </td>
         </tr>

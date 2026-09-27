@@ -76,7 +76,8 @@ export type EventType =
   | 'hr_peak'                             // 心率峰（10s 窗口），需心率带
   | 'alt_high' | 'alt_low'                // 海拔极值（全程量程 >30m 才出）
   | 'grade_flip'                          // 坡度翻转（持续爬坡接持续放坡的转折点）
-  | 'turnaround';                         // GPS 折返点（距起点最远），需定位
+  | 'turnaround'                          // GPS 折返点（距起点最远），需定位
+  | 'speech';                             // 人声段落（无 FIT 素材的音频信号事件）
 
 export const EVENT_LABELS: Record<EventType, string> = {
   head: '片头', tail: '片尾',
@@ -85,6 +86,7 @@ export const EVENT_LABELS: Record<EventType, string> = {
   speed_peak: '极速',
   power_peak: '功率峰', sprint: '冲刺', hr_peak: '心率峰',
   alt_high: '制高点', alt_low: '海拔最低', grade_flip: '坡度翻转', turnaround: '折返点',
+  speech: '人声',
 };
 
 // ---------- 样本归一化 ----------
@@ -332,8 +334,9 @@ const AUDIO_TALK_DB = -25; // 响度阈值：DJI 风噪抑制下骑行基线远�
 const AUDIO_TALK_MIN_BUCKETS = 3; // 至少 ~15s 持续响亮才算「有人声」，过路噪声/一声快门不触发
 const AUDIO_SCAN_CAP_S = 600; // 单个停顿最多扫的时长（-vn 只解音频，600s ≈ 5s；上限只为防病态素材，别截断真实人声区——beat 取人声区收尾，截断会认错结尾）
 
-// 单次 ffmpeg astats 全窗扫描 → 5s 桶能量均值（dB 转线性能量求均值再转回）
-export async function scanPauseAudio(video: string, fromS: number, toS: number): Promise<PauseAudioInfo> {
+// 单窗音频能量扫描 → 5s 桶的响度序列（dB 转线性能量求均值再转回）。
+// 静音/无效帧的桶直接缺失（调用方按阈值过滤时天然当作安静）；窗长被 AUDIO_SCAN_CAP_S 截断，扫全片请分段拼接。
+export async function scanAudioBuckets(video: string, fromS: number, toS: number): Promise<{ tS: number; db: number }[]> {
   const durS = Math.max(1, Math.min(toS - fromS, AUDIO_SCAN_CAP_S));
   const r = await run('ffmpeg', [
     '-hide_banner', '-ss', fromS.toFixed(2), '-t', durS.toFixed(2), '-i', video,
@@ -359,19 +362,21 @@ export async function scanPauseAudio(video: string, fromS: number, toS: number):
     b.n++;
     buckets.set(i, b);
   }
-  const loud: { i: number; db: number }[] = [];
-  for (const [i, b] of [...buckets.entries()].sort((a, z) => a[0] - z[0])) {
-    if (!b.n) continue;
-    const db = 10 * Math.log10(b.sum / b.n);
-    if (db > AUDIO_TALK_DB) loud.push({ i, db });
-  }
+  return [...buckets.entries()]
+    .sort((a, z) => a[0] - z[0])
+    .map(([i, b]) => ({ tS: fromS + i * AUDIO_BUCKET_S, db: 10 * Math.log10(b.sum / b.n) }));
+}
+
+export async function scanPauseAudio(video: string, fromS: number, toS: number): Promise<PauseAudioInfo> {
+  const durS = Math.max(1, Math.min(toS - fromS, AUDIO_SCAN_CAP_S));
+  const loud = (await scanAudioBuckets(video, fromS, toS)).filter((b) => b.db > AUDIO_TALK_DB);
   if (loud.length < AUDIO_TALK_MIN_BUCKETS) {
     return { talk: false, fromS: null, toS: null, peakDb: loud.length ? Math.max(...loud.map((x) => x.db)) : null };
   }
   return {
     talk: true,
-    fromS: fromS + loud[0].i * AUDIO_BUCKET_S,
-    toS: Math.min(fromS + (loud[loud.length - 1].i + 1) * AUDIO_BUCKET_S, fromS + durS),
+    fromS: loud[0].tS,
+    toS: Math.min(loud[loud.length - 1].tS + AUDIO_BUCKET_S, fromS + durS),
     peakDb: Math.max(...loud.map((x) => x.db)),
   };
 }
@@ -393,7 +398,56 @@ export async function annotatePauseAudio(events: QuickcutEvent[], video: string)
   return events;
 }
 
-// ---------- 兜底组装：事件菜单 → ~30s 粗剪 ----------
+// ---------- 无 FIT 素材：音视频信号事件 ----------
+
+// 无 FIT 时事件菜单改从音频信号来：全片分 600s 段扫响度，连续响亮区（≥15s，桶距 ≤10s 算连续，
+// 说话换气不断开）合并成人声段落；片头/片尾恒定存在。扫描失败降级为只剩片头片尾，不挡流程。
+export async function detectAvEvents(video: string, videoDurationS: number): Promise<QuickcutEvent[]> {
+  const out: QuickcutEvent[] = [
+    { type: 'head', fitS: null, videoS: 0, windowS: 4, score: 50, desc: '片头', fromVideoS: 0, toVideoS: Math.min(60, videoDurationS) },
+    { type: 'tail', fitS: null, videoS: videoDurationS, windowS: 4, score: 50, desc: '片尾', fromVideoS: Math.max(0, videoDurationS - 60), toVideoS: videoDurationS },
+  ];
+  let buckets: { tS: number; db: number }[];
+  try {
+    const chunks: Promise<{ tS: number; db: number }[]>[] = [];
+    for (let from = 0; from < videoDurationS; from += AUDIO_SCAN_CAP_S) {
+      chunks.push(scanAudioBuckets(video, from, Math.min(from + AUDIO_SCAN_CAP_S, videoDurationS)));
+    }
+    buckets = (await Promise.all(chunks)).flat().sort((a, b) => a.tS - b.tS);
+  } catch {
+    return out;
+  }
+  const regions: { fromS: number; toS: number; peakDb: number }[] = [];
+  for (const b of buckets) {
+    if (b.db <= AUDIO_TALK_DB) continue;
+    const last = regions[regions.length - 1];
+    if (last && b.tS - last.toS <= AUDIO_BUCKET_S * 2) {
+      last.toS = b.tS + AUDIO_BUCKET_S;
+      last.peakDb = Math.max(last.peakDb, b.db);
+    } else {
+      regions.push({ fromS: b.tS, toS: b.tS + AUDIO_BUCKET_S, peakDb: b.db });
+    }
+  }
+  const speech = regions.filter((r) => r.toS - r.fromS >= AUDIO_TALK_MIN_BUCKETS * AUDIO_BUCKET_S);
+  const longest = Math.max(...speech.map((r) => r.toS - r.fromS), 1);
+  for (const r of speech.sort((a, b) => b.toS - b.fromS - (a.toS - a.fromS)).slice(0, 8)) {
+    const durS = r.toS - r.fromS;
+    out.push({
+      type: 'speech',
+      fitS: null,
+      videoS: (r.fromS + r.toS) / 2,
+      windowS: Math.min(8, durS),
+      score: Math.max(30, Math.round((durS / longest) * 100)),
+      desc: `人声 ${durS.toFixed(0)}s（峰值 ${r.peakDb.toFixed(0)}dB）`,
+      fromVideoS: r.fromS,
+      toVideoS: r.toS,
+      audio: { talk: true, fromS: r.fromS, toS: r.toS, peakDb: r.peakDb },
+    });
+  }
+  return out.sort((a, b) => (a.videoS ?? 0) - (b.videoS ?? 0));
+}
+
+// ---------- 兜底组装：事件菜单 → 目标时长粗剪 ----------
 
 // 槽位偏好：generic 运动短片的骨架。每槽按 types 顺序优先（power_peak 先于 hr_peak）、同型按 score；
 // 与已选幕窗口重叠（留 2s 余量）时让位给同槽下一个候选，都没有则丢弃并记录原因。
@@ -410,23 +464,28 @@ export function assembleHeuristic({
   samples,
   segments,
   videoDurationS,
+  targetS = 30,
 }: {
   samples: NormalizedSample[];
   segments: QuickcutSegment[];
   videoDurationS: number;
+  targetS?: number; // 目标成片时长：槽位时长等比缩放（每槽钳 3–24s）
 }): QuickcutPlan {
   if (!samples.length) throw new Error('快剪需要 FIT 样本（无数据素材不支持）');
   const events = detectEvents(samples, { segments, videoDurationS });
+  const slotScale = Math.max(0.5, Math.min(6, targetS / 30));
+  const slotDur = (s: number) => Math.max(3, Math.min(24, Math.round(s * slotScale)));
 
   const acts: QuickcutAct[] = [];
   const dropped: QuickcutPlan['dropped'] = [];
   const picked: { start: number; end: number }[] = []; // 已选幕窗口（视频秒）
 
   for (const slot of HEURISTIC_SLOTS) {
+    const durS = slotDur(slot.durationS);
     const candidates = events
       .filter((e) => slot.types.includes(e.type) && e.videoS != null)
       .sort((a, b) => slot.types.indexOf(a.type) - slot.types.indexOf(b.type) || b.score - a.score);
-    const win = (center: number) => ({ start: center - slot.durationS / 2, end: center + slot.durationS / 2 });
+    const win = (center: number) => ({ start: center - durS / 2, end: center + durS / 2 });
     const overlaps = (w: { start: number; end: number }) => picked.some((p) => w.start < p.end + 2 && p.start - 2 < w.end);
     const event = candidates.find((e) => e.type === 'head' || e.type === 'tail' || !overlaps(win(e.videoS!)));
     if (!event) {
@@ -443,14 +502,14 @@ export function assembleHeuristic({
     if (event.type === 'head') {
       const preambleS = fitToVideo(segments, samples[0].tS) ?? 0;
       start = Math.min(3, preambleS / 4);
-      end = start + slot.durationS;
+      end = start + durS;
     } else if (event.type === 'tail') {
       end = videoDurationS - 1;
-      start = end - slot.durationS;
+      start = end - durS;
     } else {
-      start = Math.max(0, event.videoS! - slot.durationS / 2);
-      end = Math.min(videoDurationS, start + slot.durationS);
-      start = Math.max(0, end - slot.durationS);
+      start = Math.max(0, event.videoS! - durS / 2);
+      end = Math.min(videoDurationS, start + durS);
+      start = Math.max(0, end - durS);
     }
     picked.push({ start, end });
     acts.push({
@@ -465,6 +524,54 @@ export function assembleHeuristic({
   return { acts, dropped, totalS: acts.reduce((a, x) => a + (x.end - x.start), 0) };
 }
 
+// 无 FIT 素材的兜底组装：片头 + 人声段落（beat 取人声区收尾）+ 片尾，按 targetS 填预算；
+// 人声不够时等距补位 generic 片段——没信号可跟时的兜底之兜底，agent 层会再判断画面。
+export function assembleHeuristicAv({
+  events,
+  videoDurationS,
+  targetS = 30,
+}: {
+  events: QuickcutEvent[];
+  videoDurationS: number;
+  targetS?: number;
+}): QuickcutPlan {
+  const acts: QuickcutAct[] = [];
+  const picked: { start: number; end: number }[] = [];
+  const overlaps = (w: { start: number; end: number }) => picked.some((p) => w.start < p.end + 2 && p.start - 2 < w.end);
+  const push = (key: string, label: string, start: number, end: number, reason: string) => {
+    picked.push({ start, end });
+    acts.push({ key, label, start: Math.round(start * 100) / 100, end: Math.round(end * 100) / 100, reason });
+  };
+
+  push('departure', '片头', 0, Math.min(4, Math.max(1, videoDurationS * 0.02)), '片头');
+
+  const budget = Math.max(0, targetS - 8); // 片头片尾各占 ~4s
+  const speech = events
+    .filter((e) => e.type === 'speech' && e.fromVideoS != null && e.toVideoS != null)
+    .sort((a, b) => b.score - a.score);
+  let used = 0;
+  let n = 0;
+  for (const e of speech) {
+    if (used >= budget || n >= 8) break;
+    const end = Math.min(e.toVideoS!, videoDurationS - 1);
+    const start = Math.max(0, end - Math.min(8, e.toVideoS! - e.fromVideoS!));
+    if (end - start < 2 || overlaps({ start, end })) continue;
+    push(`speech${++n}`, '人声', start, end, e.desc);
+    used += end - start;
+  }
+  const fillers = Math.min(4, Math.ceil((budget - used) / 8));
+  for (let k = 1; k <= fillers; k++) {
+    const c = (videoDurationS * k) / (fillers + 1);
+    const start = Math.max(0, c - 4);
+    const end = Math.min(videoDurationS, start + 8);
+    if (end - start < 2 || overlaps({ start, end })) continue;
+    push(`fill${k}`, '片段', start, end, '等距补位（无人声信号）');
+  }
+
+  push('finish', '片尾', Math.max(0, videoDurationS - 5), Math.max(1, videoDurationS - 1), '片尾');
+  acts.sort((a, b) => a.start - b.start);
+  return { acts, dropped: [], totalS: acts.reduce((a, x) => a + (x.end - x.start), 0) };
+}
 // 外部（agent/CLI）指定的精确剪辑点 → plan。cuts 至少一条，0 ≤ start < end。
 export function planFromCuts(cuts: { start: number; end: number; label?: string }[]): QuickcutPlan {
   if (!Array.isArray(cuts) || !cuts.length) throw new Error('cuts 至少一条');

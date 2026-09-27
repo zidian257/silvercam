@@ -53,8 +53,8 @@ const mkJobDir = (id: string, { video = VIDEO, state = 'done', duration = 2244, 
   return job;
 };
 
-// stub render（不真编码）
-const mkService = (jobs: Map<string, any>, { renderOuts = null as string[] | null } = {}) =>
+// stub render（不真编码）；detectAv 注入假音视频事件（免跑 ffmpeg 全片扫描）
+const mkService = (jobs: Map<string, any>, { renderOuts = null as string[] | null, detectAv = null as any } = {}) =>
   new QuickcutService({
     queue: { get: (id: string) => (jobs.get(id) ?? null) as Job | null },
     configRef: { current: {} as ActpipeConfig },
@@ -65,6 +65,7 @@ const mkService = (jobs: Map<string, any>, { renderOuts = null as string[] | nul
       onProgress(100);
       return { out, durationS: 12 };
     }) as QuickcutRenderFn,
+    ...(detectAv ? { detectAvFn: detectAv } : {}),
   });
 
 const waitState = async (svc: any, id: string, want: string, timeoutMs = 10000) => {
@@ -156,13 +157,33 @@ test('create 校验：job 不存在 / 未 done / cuts 非法 → 400', async () 
   await assert.rejects(() => svc.create({ job_id: done.id, cuts: [{ start: 9, end: 3 }] }), (e: any) => e.code === 400 && /start/.test(e.message));
 });
 
-test('create 校验：成片缺失 / 无 FIT 样本 → 400', async () => {
+test('create 校验：成片缺失 → 400；无 FIT 样本不再 400（转音视频信号路径）', async () => {
   const noOut = mkJobDir('job-val-noout');
   noOut.artifacts.output = '/nope/none.mp4';
   const noSamples = mkJobDir('job-val-nosamples', { withSamples: false });
-  const svc = mkService(new Map([[noOut.id, noOut], [noSamples.id, noSamples]]));
+  const detectAv = async () => [
+    { type: 'head', fitS: null, videoS: 0, windowS: 4, score: 50, desc: '片头', fromVideoS: 0, toVideoS: 15 },
+    { type: 'tail', fitS: null, videoS: 2244, windowS: 4, score: 50, desc: '片尾', fromVideoS: 2229, toVideoS: 2244 },
+  ];
+  const svc = mkService(new Map([[noOut.id, noOut], [noSamples.id, noSamples]]), { detectAv });
   await assert.rejects(() => svc.create({ job_id: noOut.id }), (e: any) => e.code === 400 && /成片/.test(e.message));
-  await assert.rejects(() => svc.create({ job_id: noSamples.id }), (e: any) => e.code === 400 && /FIT 样本/.test(e.message));
+  // 无 FIT：纯拷贝任务也能快剪（segments 恒为单段 offset 0）
+  const rec = await svc.create({ job_id: noSamples.id });
+  const done = await waitState(svc, rec.id, 'done');
+  assert.equal(done.plan.acts[0].key, 'departure');
+  assert.equal(done.plan.acts[done.plan.acts.length - 1].key, 'finish');
+});
+
+test('create 校验：target_seconds 越界 → 400；合法值落盘并驱动 L0 预算', async () => {
+  const job = mkJobDir('job-target');
+  const svc = mkService(new Map([[job.id, job]]));
+  await assert.rejects(() => svc.create({ job_id: job.id, target_seconds: 5 }), (e: any) => e.code === 400 && /target_seconds/.test(e.message));
+  await assert.rejects(() => svc.create({ job_id: job.id, target_seconds: 999 }), (e: any) => e.code === 400 && /target_seconds/.test(e.message));
+  const rec = await svc.create({ job_id: job.id, target_seconds: 120 });
+  assert.equal(rec.target_seconds, 120);
+  const done = await waitState(svc, rec.id, 'done');
+  // fixture 成片只有 15s：窗口被视频长度钳住，但 120s 目标的预算显著大于默认 30s（同素材默认 22s）
+  assert.ok(done.plan.totalS > 30, `120s 目标的 L0 总时长 ${done.plan.totalS}`);
 });
 
 // ---------- analyze：只分析不渲染 ----------
@@ -195,6 +216,21 @@ test('analyze 校验：job 不存在 / 未 done → 400', async () => {
   await assert.rejects(() => svc.analyze({}), (e: any) => e.code === 400 && /job_id/.test(e.message));
   await assert.rejects(() => svc.analyze({ job_id: 'ghost' }), (e: any) => e.code === 400 && /job not found/.test(e.message));
   await assert.rejects(() => svc.analyze({ job_id: queued.id }), (e: any) => e.code === 400 && /done/.test(e.message));
+});
+
+test('analyze：无 FIT 任务走音视频信号事件 + AV 兜底计划', async () => {
+  const job = mkJobDir('job-analyze-av', { withSamples: false });
+  const speechEv = { type: 'speech', fitS: null, videoS: 10, windowS: 8, score: 100, desc: '人声 8s（峰值 -18dB）', fromVideoS: 6, toVideoS: 14, audio: { talk: true, fromS: 6, toS: 14, peakDb: -18 } };
+  const detectAv = async () => [
+    { type: 'head', fitS: null, videoS: 0, windowS: 4, score: 50, desc: '片头', fromVideoS: 0, toVideoS: 15 },
+    speechEv,
+    { type: 'tail', fitS: null, videoS: 15, windowS: 4, score: 50, desc: '片尾', fromVideoS: 0, toVideoS: 15 },
+  ];
+  const svc = mkService(new Map([[job.id, job]]), { detectAv });
+  const r = await svc.analyze({ job_id: job.id, target_seconds: 60 });
+  assert.deepEqual(r.segments, [{ videoStartS: 0, durationS: 2244, offsetSeconds: 0 }]); // probe 产物的段时长
+  assert.ok(r.events.some((e: any) => e.type === 'speech'), '事件菜单含人声事件');
+  assert.ok(r.plan.acts.some((a: any) => a.label === '人声'), 'AV 兜底计划含人声幕');
 });
 
 // ---------- get / find ----------

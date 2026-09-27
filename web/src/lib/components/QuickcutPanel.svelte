@@ -20,11 +20,12 @@
     jobId: string;
     records?: QuickcutRecord[]; // 全部快剪记录（面板内部按 jobId 归并，最新一条优先展示）
     llmStatus?: LlmStatus | null; // dash 挂载时拉的 llm_status；null = 未配置/未拉到
-    onSubmit?: (jobId: string, useLlm: boolean) => Promise<void> | void;
+    onSubmit?: (jobId: string, useLlm: boolean, targetS: number) => Promise<void> | void;
   }
   let { jobId, records = [], llmStatus = null, onSubmit = () => {} }: Props = $props();
 
   let useLlm = $state(true);
+  let targetS = $state(30);
   let submitting = $state(false);
   let submitErr = $state('');
 
@@ -60,7 +61,7 @@
     submitting = true;
     submitErr = '';
     try {
-      await onSubmit(jobId, useLlm);
+      await onSubmit(jobId, useLlm, targetS);
     } catch (e) {
       submitErr = (e as Error).message;
     } finally {
@@ -76,7 +77,10 @@
       <label class="ai" title="勾选后由 pi 加载快剪 skill 自由圈幕（看画面选镜头）；不勾则只用 L0 事件菜单的确定性粗剪">
         <input type="checkbox" bind:checked={useLlm}> AI 优选镜头
       </label>
-      <button class="btn primary" disabled={submitting} onclick={submit}>{submitting ? '提交中…' : '快剪 30s'}</button>
+      <select class="sel" bind:value={targetS} title="目标成片时长（±25% 弹性，叙事优先）">
+        {#each [30, 60, 90, 120] as t (t)}<option value={t}>{t}s</option>{/each}
+      </select>
+      <button class="btn primary" disabled={submitting} onclick={submit}>{submitting ? '提交中…' : `快剪 ${targetS}s`}</button>
     </div>
   </div>
   <div class="llmhint">{llmHintText(llmStatus)}</div>
@@ -156,6 +160,7 @@
   .ttl { font-size: 13px; font-weight: 600; color: var(--text-2); }
   .actions { display: flex; align-items: center; gap: 12px; }
   .ai { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-1); cursor: pointer; }
+  .sel { font-size: 12px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-1); color: var(--text-1); }
   .llmhint { margin-top: 6px; font-size: 11px; color: var(--text-3); }
   .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
   .pulse {
